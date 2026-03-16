@@ -25,9 +25,17 @@ func (r *Router) SetupRoutes(engine *gin.Engine) {
 		authHandler := NewAuthHandler(r.services.User)
 		authHandler.RegisterRoutes(v1)
 
+		// 用户管理
+		userHandler := NewUserHandler(r.services.User)
+		userHandler.RegisterRoutes(v1)
+
 		// 入站规则
 		inboundHandler := NewInboundHandler(r.services.Inbound)
 		inboundHandler.RegisterRoutes(v1)
+
+		// 订阅
+		subHandler := NewSubscriptionHandler(r.services.Inbound)
+		subHandler.RegisterRoutes(v1)
 
 		// 系统信息
 		systemHandler := NewSystemHandler(r.services.Xray)

@@ -7,6 +7,7 @@ type User struct {
 	ID        int       `json:"id" gorm:"primaryKey;autoIncrement"`
 	Username  string    `json:"username" gorm:"uniqueIndex;size:64"`
 	Password  string    `json:"-" gorm:"size:256"` // json忽略密码
+	Enable    bool      `json:"enable" gorm:"default:true"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

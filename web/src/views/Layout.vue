@@ -3,7 +3,7 @@ import { h, computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NButton, NIcon, NSpace, NSwitch } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
-import { HomeOutline, ServerOutline, PeopleOutline, ShieldCheckmarkOutline, SettingsOutline, LogOutOutline, SunnyOutline, MoonOutline } from '@vicons/ionicons5'
+import { HomeOutline, ServerOutline, PeopleOutline, ShieldCheckmarkOutline, SettingsOutline, LogOutOutline, SunnyOutline, MoonOutline, PersonCircleOutline } from '@vicons/ionicons5'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -33,6 +33,11 @@ const menuOptions: MenuOption[] = [
     label: () => h(RouterLink, { to: '/certificates' }, { default: () => '证书管理' }),
     key: 'Certificates',
     icon: () => h(NIcon, null, { default: () => h(ShieldCheckmarkOutline) })
+  },
+  {
+    label: () => h(RouterLink, { to: '/users' }, { default: () => '用户管理' }),
+    key: 'Users',
+    icon: () => h(NIcon, null, { default: () => h(PersonCircleOutline) })
   },
   {
     label: () => h(RouterLink, { to: '/settings' }, { default: () => '系统设置' }),

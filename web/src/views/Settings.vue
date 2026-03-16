@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NInputNumber, NButton, NSpace, NSelect, NSwitch, NDynamicTags, NDivider, NPopconfirm, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NInputNumber, NButton, NSpace, NSelect, NDynamicTags, NDivider, NPopconfirm, useMessage } from 'naive-ui'
 import { settingsApi, type Settings } from '@/api/settings'
 
 const message = useMessage()

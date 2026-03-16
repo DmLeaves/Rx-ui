@@ -6,6 +6,7 @@ import (
 
 // UserRepository 用户数据访问接口
 type UserRepository interface {
+	GetAll() ([]*model.User, error)
 	FindByID(id int) (*model.User, error)
 	FindByUsername(username string) (*model.User, error)
 	Create(user *model.User) error

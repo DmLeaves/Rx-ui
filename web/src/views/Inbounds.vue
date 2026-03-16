@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, h } from 'vue'
-import { NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NTooltip, useMessage } from 'naive-ui'
-import type { DataTableColumns } from 'naive-ui'
-import { AddOutline, RefreshOutline, TrashOutline, CreateOutline, QrCodeOutline, LinkOutline, RefreshCircleOutline } from '@vicons/ionicons5'
+import {
+  NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NTooltip,
+  NModal, NInput, NUpload, useMessage
+} from 'naive-ui'
+import type { DataTableColumns, UploadFileInfo } from 'naive-ui'
+import {
+  AddOutline, RefreshOutline, TrashOutline, CreateOutline,
+  QrCodeOutline, LinkOutline, RefreshCircleOutline,
+  CloudDownloadOutline, CloudUploadOutline, ShareSocialOutline
+} from '@vicons/ionicons5'
 import { inboundApi, type Inbound, type CreateInboundParams } from '@/api/inbound'
 import InboundModal from '@/components/InboundModal.vue'
 import QRCodeModal from '@/components/QRCodeModal.vue'
+import { formatBytes, formatExpiry } from '@/utils/format'
+import { generateInboundLink, generateSubscription } from '@/utils/link'
 
 const message = useMessage()
 const loading = ref(false)
@@ -19,21 +28,9 @@ const showQRModal = ref(false)
 const qrTitle = ref('')
 const qrLink = ref('')
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-function formatExpiry(timestamp: number): string {
-  if (!timestamp) return '永久'
-  const date = new Date(timestamp)
-  const now = new Date()
-  if (date < now) return '已过期'
-  return date.toLocaleDateString('zh-CN')
-}
+// 订阅弹窗
+const showSubscriptionModal = ref(false)
+const subscriptionLink = ref('')
 
 function getStatusType(row: Inbound): 'success' | 'error' | 'warning' {
   if (!row.enable) return 'error'
@@ -49,64 +46,8 @@ function getStatusText(row: Inbound): string {
   return '启用'
 }
 
-function generateLink(row: Inbound): string {
-  try {
-    const settings = JSON.parse(row.settings || '{}')
-    const streamSettings = JSON.parse(row.streamSettings || '{}')
-    const protocol = row.protocol
-
-    switch (protocol) {
-      case 'vmess': {
-        const client = settings.clients?.[0]
-        if (!client) return ''
-        const config = {
-          v: '2',
-          ps: row.remark || `${row.port}`,
-          add: window.location.hostname,
-          port: row.port,
-          id: client.id,
-          aid: client.alterId || 0,
-          net: streamSettings.network || 'tcp',
-          type: streamSettings.tcpSettings?.header?.type || 'none',
-          host: streamSettings.wsSettings?.headers?.Host || '',
-          path: streamSettings.wsSettings?.path || '',
-          tls: streamSettings.security === 'tls' ? 'tls' : ''
-        }
-        return 'vmess://' + btoa(JSON.stringify(config))
-      }
-      case 'vless': {
-        const client = settings.clients?.[0]
-        if (!client) return ''
-        const params = new URLSearchParams()
-        params.set('type', streamSettings.network || 'tcp')
-        if (streamSettings.security) params.set('security', streamSettings.security)
-        if (client.flow) params.set('flow', client.flow)
-        if (streamSettings.wsSettings?.path) params.set('path', streamSettings.wsSettings.path)
-        if (streamSettings.grpcSettings?.serviceName) params.set('serviceName', streamSettings.grpcSettings.serviceName)
-        return `vless://${client.id}@${window.location.hostname}:${row.port}?${params.toString()}#${encodeURIComponent(row.remark || '')}`
-      }
-      case 'trojan': {
-        const client = settings.clients?.[0]
-        if (!client) return ''
-        return `trojan://${client.password}@${window.location.hostname}:${row.port}#${encodeURIComponent(row.remark || '')}`
-      }
-      case 'shadowsocks': {
-        const method = settings.method || 'aes-256-gcm'
-        const password = settings.password || ''
-        const userinfo = btoa(`${method}:${password}`)
-        return `ss://${userinfo}@${window.location.hostname}:${row.port}#${encodeURIComponent(row.remark || '')}`
-      }
-      default:
-        return ''
-    }
-  } catch (e) {
-    console.error('生成链接失败:', e)
-    return ''
-  }
-}
-
 function showQR(row: Inbound) {
-  const link = generateLink(row)
+  const link = generateInboundLink(row)
   if (!link) {
     message.warning('该协议不支持生成二维码')
     return
@@ -117,13 +58,95 @@ function showQR(row: Inbound) {
 }
 
 function copyLink(row: Inbound) {
-  const link = generateLink(row)
+  const link = generateInboundLink(row)
   if (!link) {
     message.warning('该协议不支持生成链接')
     return
   }
   navigator.clipboard.writeText(link)
   message.success('链接已复制')
+}
+
+// 订阅功能
+function openSubscription() {
+  const base64 = generateSubscription(inbounds.value)
+  if (!base64 || base64 === btoa('')) {
+    message.warning('没有可用的订阅链接')
+    return
+  }
+  subscriptionLink.value = base64
+  showSubscriptionModal.value = true
+}
+
+function copySubscription() {
+  navigator.clipboard.writeText(subscriptionLink.value)
+  message.success('订阅内容已复制')
+}
+
+function showSubscriptionQR() {
+  qrTitle.value = '订阅二维码'
+  qrLink.value = subscriptionLink.value
+  showQRModal.value = true
+}
+
+// 导出功能
+function handleExport() {
+  const data = inbounds.value.map(item => ({
+    remark: item.remark,
+    enable: item.enable,
+    listen: item.listen,
+    port: item.port,
+    protocol: item.protocol,
+    settings: item.settings,
+    streamSettings: item.streamSettings,
+    sniffing: item.sniffing,
+    tag: item.tag,
+    total: item.total,
+    expiryTime: item.expiryTime,
+    certificateId: item.certificateId
+  }))
+  
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `inbounds-${new Date().toISOString().slice(0,10)}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+  message.success('导出成功')
+}
+
+// 导入功能
+async function handleImport(options: { file: UploadFileInfo }) {
+  const file = options.file.file
+  if (!file) return
+  
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text) as CreateInboundParams[]
+    
+    if (!Array.isArray(data)) {
+      message.error('无效的JSON格式')
+      return
+    }
+    
+    let successCount = 0
+    let errorCount = 0
+    
+    for (const item of data) {
+      try {
+        await inboundApi.create(item)
+        successCount++
+      } catch {
+        errorCount++
+      }
+    }
+    
+    message.success(`导入完成: 成功 ${successCount} 个, 失败 ${errorCount} 个`)
+    fetchInbounds()
+  } catch {
+    message.error('解析JSON失败')
+  }
 }
 
 const columns: DataTableColumns<Inbound> = [
@@ -203,8 +226,9 @@ async function fetchInbounds() {
   try {
     const res = await inboundApi.list()
     inbounds.value = res.data.data || []
-  } catch (error: any) {
-    message.error(error.message || '获取列表失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : '获取列表失败'
+    message.error(msg)
   } finally {
     loading.value = false
   }
@@ -231,8 +255,9 @@ async function handleSubmit(data: CreateInboundParams) {
     }
     showInboundModal.value = false
     fetchInbounds()
-  } catch (error: any) {
-    message.error(error.message || '操作失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : '操作失败'
+    message.error(msg)
   }
 }
 
@@ -241,8 +266,9 @@ async function handleDelete(id: number) {
     await inboundApi.delete(id)
     message.success('删除成功')
     fetchInbounds()
-  } catch (error: any) {
-    message.error(error.message || '删除失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : '删除失败'
+    message.error(msg)
   }
 }
 
@@ -251,8 +277,9 @@ async function handleResetTraffic(id: number) {
     await inboundApi.resetTraffic(id)
     message.success('流量已重置')
     fetchInbounds()
-  } catch (error: any) {
-    message.error(error.message || '重置失败')
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : '重置失败'
+    message.error(msg)
   }
 }
 
@@ -266,6 +293,24 @@ onMounted(() => {
     <n-space justify="space-between" align="center" style="margin-bottom: 16px;">
       <h2 style="margin: 0;">入站规则</h2>
       <n-space>
+        <n-button @click="openSubscription">
+          <template #icon><n-icon :component="ShareSocialOutline" /></template>
+          订阅链接
+        </n-button>
+        <n-button @click="handleExport">
+          <template #icon><n-icon :component="CloudDownloadOutline" /></template>
+          导出
+        </n-button>
+        <n-upload
+          :show-file-list="false"
+          accept=".json"
+          :custom-request="({ file }) => handleImport({ file })"
+        >
+          <n-button>
+            <template #icon><n-icon :component="CloudUploadOutline" /></template>
+            导入
+          </n-button>
+        </n-upload>
         <n-button @click="fetchInbounds">
           <template #icon><n-icon :component="RefreshOutline" /></template>
           刷新
@@ -296,5 +341,29 @@ onMounted(() => {
       :title="qrTitle"
       :link="qrLink"
     />
+
+    <!-- 订阅弹窗 -->
+    <n-modal
+      v-model:show="showSubscriptionModal"
+      preset="card"
+      title="订阅链接"
+      style="width: 600px; max-width: 90vw;"
+    >
+      <n-space vertical>
+        <p style="color: var(--n-text-color-3); margin: 0;">
+          订阅内容包含所有启用的入站规则链接（Base64编码）
+        </p>
+        <n-input
+          :value="subscriptionLink"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 6 }"
+          readonly
+        />
+        <n-space>
+          <n-button type="primary" @click="copySubscription">复制内容</n-button>
+          <n-button @click="showSubscriptionQR">显示二维码</n-button>
+        </n-space>
+      </n-space>
+    </n-modal>
   </div>
 </template>

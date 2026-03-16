@@ -79,21 +79,37 @@ func (s *UserService) UpdateFirstUser(username, password string) error {
 }
 
 // CreateUser 创建新用户
-func (s *UserService) CreateUser(username, password string) (*model.User, error) {
-	// 检查用户是否已存在
+func (s *UserService) CreateUser(username, password string) error {
 	existing, _ := s.repo.FindByUsername(username)
 	if existing != nil {
-		return nil, ErrUserExists
+		return ErrUserExists
 	}
 
 	user := &model.User{
 		Username: username,
 		Password: password, // TODO: bcrypt
+		Enable:   true,
 	}
 
-	if err := s.repo.Create(user); err != nil {
-		return nil, err
-	}
+	return s.repo.Create(user)
+}
 
-	return user, nil
+// GetAll 获取所有用户
+func (s *UserService) GetAll() ([]*model.User, error) {
+	return s.repo.GetAll()
+}
+
+// UpdatePassword 更新用户密码
+func (s *UserService) UpdatePassword(id int, newPassword string) error {
+	user, err := s.repo.FindByID(id)
+	if err != nil {
+		return ErrUserNotFound
+	}
+	user.Password = newPassword // TODO: bcrypt
+	return s.repo.Update(user)
+}
+
+// DeleteUser 删除用户
+func (s *UserService) DeleteUser(id int) error {
+	return s.repo.Delete(id)
 }
