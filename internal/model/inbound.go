@@ -21,6 +21,7 @@ type Inbound struct {
 	UserID     int       `json:"userId" gorm:"index"`          // 关联管理员
 	Remark     string    `json:"remark" gorm:"size:256"`       // 备注名称
 	Enable     bool      `json:"enable" gorm:"default:true"`   // 是否启用
+	Listen     string    `json:"listen" gorm:"size:64"`        // 监听地址
 	Port       int       `json:"port" gorm:"uniqueIndex"`      // 监听端口
 	Protocol   Protocol  `json:"protocol" gorm:"size:32"`      // 协议类型
 	Tag        string    `json:"tag" gorm:"uniqueIndex;size:64"` // Xray tag

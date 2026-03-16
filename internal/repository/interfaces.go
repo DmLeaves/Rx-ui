@@ -64,6 +64,13 @@ type SettingRepository interface {
 	ResetAll() error
 }
 
+// TrafficUpdate 流量更新
+type TrafficUpdate struct {
+	Tag  string
+	Up   int64
+	Down int64
+}
+
 // Repositories 聚合所有 Repository（依赖注入容器）
 type Repositories struct {
 	User        UserRepository
