@@ -12,9 +12,26 @@ LDFLAGS = -ldflags "-X 'Rx-ui/config.version=$(VERSION)'"
 # Default target
 all: build
 
-# Build binary
-build:
+# Build frontend
+frontend:
+	@echo "Building frontend..."
+	cd web && npm install && npm run build
+	rm -rf internal/web/dist
+	cp -r web/dist internal/web/
+
+# Build binary (without frontend)
+build-backend:
 	@echo "Building $(BINARY_NAME) v$(VERSION)..."
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_NAME) .
+
+# Build all (frontend + backend)
+build: frontend build-backend
+
+# Quick build (skip frontend if dist exists)
+quick:
+	@if [ ! -d "internal/web/dist" ]; then \
+		make frontend; \
+	fi
 	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_NAME) .
 
 # Install dependencies
