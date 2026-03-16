@@ -1,16 +1,273 @@
 <script setup lang="ts">
-import { NCard, NEmpty } from 'naive-ui'
+import { ref, onMounted, h } from 'vue'
+import { NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NModal, NForm, NFormItem, NInput, NSwitch, NAlert, useMessage, NTabs, NTabPane } from 'naive-ui'
+import type { DataTableColumns } from 'naive-ui'
+import { AddOutline, RefreshOutline, TrashOutline, CreateOutline, WarningOutline } from '@vicons/ionicons5'
+import { certificateApi, type Certificate, type CreateCertificateParams } from '@/api/certificate'
+
+const message = useMessage()
+const loading = ref(false)
+const certificates = ref<Certificate[]>([])
+const expiringCerts = ref<Certificate[]>([])
+
+// 弹窗
+const showModal = ref(false)
+const editingCert = ref<Certificate | null>(null)
+const certForm = ref<CreateCertificateParams>({
+  domain: '',
+  certFile: '',
+  keyFile: '',
+  certContent: '',
+  keyContent: '',
+  remark: '',
+  autoRenew: false
+})
+
+function formatDate(dateStr: string): string {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleDateString('zh-CN')
+}
+
+function getDaysUntilExpiry(dateStr: string): number {
+  if (!dateStr) return Infinity
+  const expiry = new Date(dateStr)
+  const now = new Date()
+  return Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function getExpiryStatus(dateStr: string): 'success' | 'warning' | 'error' {
+  const days = getDaysUntilExpiry(dateStr)
+  if (days < 0) return 'error'
+  if (days < 30) return 'warning'
+  return 'success'
+}
+
+function getExpiryText(dateStr: string): string {
+  const days = getDaysUntilExpiry(dateStr)
+  if (days < 0) return `已过期 ${-days} 天`
+  if (days === 0) return '今天过期'
+  if (days < 30) return `${days} 天后过期`
+  return formatDate(dateStr)
+}
+
+const columns: DataTableColumns<Certificate> = [
+  { title: 'ID', key: 'id', width: 60 },
+  { title: '域名', key: 'domain', ellipsis: { tooltip: true } },
+  { title: '备注', key: 'remark', ellipsis: { tooltip: true }, render: (row) => row.remark || '-' },
+  {
+    title: '过期时间',
+    key: 'expiresAt',
+    width: 150,
+    render: (row) => h(NTag, { type: getExpiryStatus(row.expiresAt), size: 'small' }, { default: () => getExpiryText(row.expiresAt) })
+  },
+  {
+    title: '自动续期',
+    key: 'autoRenew',
+    width: 90,
+    render: (row) => h(NTag, { type: row.autoRenew ? 'success' : 'default', size: 'small' }, { default: () => row.autoRenew ? '是' : '否' })
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 120,
+    render: (row) => h(NSpace, { size: 'small' }, {
+      default: () => [
+        h(NButton, { size: 'small', quaternary: true, onClick: () => handleEdit(row) }, { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }),
+        h(NPopconfirm, { onPositiveClick: () => handleDelete(row.id) }, {
+          trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
+          default: () => '确定删除该证书?'
+        })
+      ]
+    })
+  }
+]
+
+async function fetchCertificates() {
+  loading.value = true
+  try {
+    const res = await certificateApi.list()
+    certificates.value = res.data.data || []
+  } catch (error: any) {
+    message.error(error.message || '获取列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchExpiring() {
+  try {
+    const res = await certificateApi.getExpiring(30)
+    expiringCerts.value = res.data.data || []
+  } catch (error) {
+    // 静默失败
+  }
+}
+
+function handleAdd() {
+  editingCert.value = null
+  certForm.value = {
+    domain: '',
+    certFile: '',
+    keyFile: '',
+    certContent: '',
+    keyContent: '',
+    remark: '',
+    autoRenew: false
+  }
+  showModal.value = true
+}
+
+function handleEdit(row: Certificate) {
+  editingCert.value = row
+  certForm.value = {
+    domain: row.domain,
+    certFile: row.certFile,
+    keyFile: row.keyFile,
+    certContent: row.certContent,
+    keyContent: row.keyContent,
+    remark: row.remark,
+    autoRenew: row.autoRenew,
+    expiresAt: row.expiresAt
+  }
+  showModal.value = true
+}
+
+async function handleSubmit() {
+  if (!certForm.value.domain) {
+    message.warning('请输入域名')
+    return
+  }
+
+  try {
+    if (editingCert.value) {
+      await certificateApi.update(editingCert.value.id, certForm.value)
+      message.success('更新成功')
+    } else {
+      await certificateApi.create(certForm.value)
+      message.success('添加成功')
+    }
+    showModal.value = false
+    fetchCertificates()
+    fetchExpiring()
+  } catch (error: any) {
+    message.error(error.message || '操作失败')
+  }
+}
+
+async function handleDelete(id: number) {
+  try {
+    await certificateApi.delete(id)
+    message.success('删除成功')
+    fetchCertificates()
+  } catch (error: any) {
+    message.error(error.message || '删除失败')
+  }
+}
+
+onMounted(() => {
+  fetchCertificates()
+  fetchExpiring()
+})
 </script>
 
 <template>
   <div>
-    <h2 style="margin: 0 0 16px 0;">证书管理</h2>
-    <n-card>
-      <n-empty description="证书管理页面开发中...">
-        <template #extra>
-          <p>提示：证书管理用于管理 TLS 证书，支持多域名、自动续期提醒。</p>
-        </template>
-      </n-empty>
-    </n-card>
+    <n-space justify="space-between" align="center" style="margin-bottom: 16px;">
+      <h2 style="margin: 0;">证书管理</h2>
+      <n-space>
+        <n-button @click="fetchCertificates">
+          <template #icon><n-icon :component="RefreshOutline" /></template>
+          刷新
+        </n-button>
+        <n-button type="primary" @click="handleAdd">
+          <template #icon><n-icon :component="AddOutline" /></template>
+          添加证书
+        </n-button>
+      </n-space>
+    </n-space>
+
+    <!-- 即将过期警告 -->
+    <n-alert v-if="expiringCerts.length > 0" type="warning" style="margin-bottom: 16px;">
+      <template #icon>
+        <n-icon :component="WarningOutline" />
+      </template>
+      有 {{ expiringCerts.length }} 个证书将在 30 天内过期：
+      {{ expiringCerts.map(c => c.domain).join(', ') }}
+    </n-alert>
+
+    <n-data-table
+      :columns="columns"
+      :data="certificates"
+      :loading="loading"
+      :bordered="false"
+      :row-key="(row: Certificate) => row.id"
+    />
+
+    <!-- 证书编辑弹窗 -->
+    <n-modal
+      v-model:show="showModal"
+      :title="editingCert ? '编辑证书' : '添加证书'"
+      preset="card"
+      style="width: 600px;"
+    >
+      <n-tabs type="line">
+        <n-tab-pane name="file" tab="文件路径">
+          <n-form label-placement="left" label-width="100">
+            <n-form-item label="域名">
+              <n-input v-model:value="certForm.domain" placeholder="例如: example.com" />
+            </n-form-item>
+            <n-form-item label="证书文件">
+              <n-input v-model:value="certForm.certFile" placeholder="证书文件路径 (.crt/.pem)" />
+            </n-form-item>
+            <n-form-item label="私钥文件">
+              <n-input v-model:value="certForm.keyFile" placeholder="私钥文件路径 (.key)" />
+            </n-form-item>
+            <n-form-item label="备注">
+              <n-input v-model:value="certForm.remark" placeholder="可选" />
+            </n-form-item>
+            <n-form-item label="自动续期">
+              <n-switch v-model:value="certForm.autoRenew" />
+            </n-form-item>
+          </n-form>
+        </n-tab-pane>
+
+        <n-tab-pane name="content" tab="直接输入">
+          <n-form label-placement="left" label-width="100">
+            <n-form-item label="域名">
+              <n-input v-model:value="certForm.domain" placeholder="例如: example.com" />
+            </n-form-item>
+            <n-form-item label="证书内容">
+              <n-input
+                v-model:value="certForm.certContent"
+                type="textarea"
+                :rows="6"
+                placeholder="粘贴证书内容 (-----BEGIN CERTIFICATE-----...)"
+              />
+            </n-form-item>
+            <n-form-item label="私钥内容">
+              <n-input
+                v-model:value="certForm.keyContent"
+                type="textarea"
+                :rows="6"
+                placeholder="粘贴私钥内容 (-----BEGIN PRIVATE KEY-----...)"
+              />
+            </n-form-item>
+            <n-form-item label="备注">
+              <n-input v-model:value="certForm.remark" placeholder="可选" />
+            </n-form-item>
+            <n-form-item label="自动续期">
+              <n-switch v-model:value="certForm.autoRenew" />
+            </n-form-item>
+          </n-form>
+        </n-tab-pane>
+      </n-tabs>
+
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showModal = false">取消</n-button>
+          <n-button type="primary" @click="handleSubmit">{{ editingCert ? '保存' : '添加' }}</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
