@@ -1,19 +1,13 @@
-module Rx-ui
+module rxui
 
 go 1.22
 
 require (
-	github.com/BurntSushi/toml v0.3.1
 	github.com/Workiva/go-datastructures v1.0.53
-	github.com/gin-contrib/sessions v0.0.3
 	github.com/gin-gonic/gin v1.7.1
-	github.com/nicksnyder/go-i18n/v2 v2.1.2
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/shirou/gopsutil v3.21.3+incompatible
 	github.com/xtls/xray-core v1.4.2
-	go.uber.org/atomic v1.7.0
-	golang.org/x/text v0.3.6
 	google.golang.org/grpc v1.38.0
 	gorm.io/driver/sqlite v1.1.4
 	gorm.io/gorm v1.21.9
@@ -27,9 +21,6 @@ require (
 	github.com/go-playground/universal-translator v0.17.0 // indirect
 	github.com/go-playground/validator/v10 v10.4.1 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
-	github.com/gorilla/context v1.1.1 // indirect
-	github.com/gorilla/securecookie v1.1.1 // indirect
-	github.com/gorilla/sessions v1.1.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.2 // indirect
 	github.com/json-iterator/go v1.1.9 // indirect
@@ -45,6 +36,7 @@ require (
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2 // indirect
 	golang.org/x/net v0.0.0-20210330230544-e57232859fb2 // indirect
 	golang.org/x/sys v0.0.0-20210511113859-b0526f3d8744 // indirect
+	golang.org/x/text v0.3.6 // indirect
 	google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013 // indirect
 	google.golang.org/protobuf v1.26.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

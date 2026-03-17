@@ -2,29 +2,31 @@ import request from './request'
 import type { ApiResponse } from './request'
 
 export interface SystemStatus {
-  hostname: string
-  os: string
-  arch: string
+  cpu: {
+    cores: number
+    percent: number
+  }
+  memory: {
+    total: number
+    used: number
+  }
+  load: number[]
   uptime: number
-  cpuPercent: number
-  cpuCores: number
-  memTotal: number
-  memUsed: number
-  memPercent: number
-  diskTotal: number
-  diskUsed: number
-  diskPercent: number
-  netUpload: number
-  netDownload: number
-  xrayRunning: boolean
-  xrayVersion: string
+  traffic: {
+    up: number
+    down: number
+  }
+  xray: {
+    running: boolean
+    version: string
+  }
   panelUptime: number
-  goVersion: string
+  inboundCount: number
 }
 
-export interface XrayVersion {
-  version: string
+export interface XrayStatus {
   running: boolean
+  version: string
 }
 
 export const systemApi = {
@@ -32,11 +34,19 @@ export const systemApi = {
     return request.get<ApiResponse<SystemStatus>>('/system/status')
   },
 
-  restartXray() {
-    return request.post<ApiResponse>('/system/xray/restart')
+  getXrayStatus() {
+    return request.get<ApiResponse<XrayStatus>>('/xray/status')
   },
 
-  getXrayVersion() {
-    return request.get<ApiResponse<XrayVersion>>('/system/xray/version')
+  startXray() {
+    return request.post<ApiResponse>('/xray/start')
+  },
+
+  stopXray() {
+    return request.post<ApiResponse>('/xray/stop')
+  },
+
+  restartXray() {
+    return request.post<ApiResponse>('/xray/restart')
   }
 }

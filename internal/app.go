@@ -1,8 +1,8 @@
 package internal
 
 import (
-	"Rx-ui/internal/config"
-	"Rx-ui/internal/repository"
+	"rxui/internal/config"
+	"rxui/internal/repository"
 )
 
 // App 应用容器（依赖注入）

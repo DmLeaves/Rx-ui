@@ -3,7 +3,7 @@ package handler
 import (
 	"strconv"
 
-	"Rx-ui/internal/service"
+	"rxui/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

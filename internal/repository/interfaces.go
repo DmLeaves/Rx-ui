@@ -1,7 +1,7 @@
 package repository
 
 import (
-	"Rx-ui/internal/model"
+	"rxui/internal/model"
 )
 
 // UserRepository 用户数据访问接口

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"Rx-ui/internal/config"
-	"Rx-ui/internal/model"
-	"Rx-ui/internal/repository"
+	"rxui/internal/config"
+	"rxui/internal/model"
+	"rxui/internal/repository"
 )
 
 var (

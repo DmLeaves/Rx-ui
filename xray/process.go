@@ -14,7 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"Rx-ui/util/common"
+	"rxui/util/common"
 
 	"github.com/Workiva/go-datastructures/queue"
 	statsservice "github.com/xtls/xray-core/app/stats/command"

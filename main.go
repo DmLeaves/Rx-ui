@@ -1,230 +1,858 @@
 package main
 
 import (
-	"flag"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
-	_ "unsafe"
-	"Rx-ui/config"
-	"Rx-ui/database"
-	"Rx-ui/logger"
-	"Rx-ui/v2ui"
-	"Rx-ui/web"
-	"Rx-ui/web/global"
-	"Rx-ui/web/service"
+	"time"
 
-	"github.com/op/go-logging"
+	"github.com/gin-gonic/gin"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/host"
+	"github.com/shirou/gopsutil/load"
+	"github.com/shirou/gopsutil/mem"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"rxui/internal/model"
+	"rxui/internal/web"
 )
 
-func runWebServer() {
-	log.Printf("%v %v", config.GetName(), config.GetVersion())
-
-	switch config.GetLogLevel() {
-	case config.Debug:
-		logger.InitLogger(logging.DEBUG)
-	case config.Info:
-		logger.InitLogger(logging.INFO)
-	case config.Warn:
-		logger.InitLogger(logging.WARNING)
-	case config.Error:
-		logger.InitLogger(logging.ERROR)
-	default:
-		log.Fatal("unknown log level:", config.GetLogLevel())
-	}
-
-	err := database.InitDB(config.GetDBPath())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var server *web.Server
-
-	server = web.NewServer()
-	global.SetWebServer(server)
-	err = server.Start()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGKILL)
-	for {
-		sig := <-sigCh
-
-		switch sig {
-		case syscall.SIGHUP:
-			err := server.Stop()
-			if err != nil {
-				logger.Warning("stop server err:", err)
-			}
-			server = web.NewServer()
-			global.SetWebServer(server)
-			err = server.Start()
-			if err != nil {
-				log.Println(err)
-				return
-			}
-		default:
-			server.Stop()
-			return
-		}
-	}
-}
-
-func resetSetting() {
-	err := database.InitDB(config.GetDBPath())
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	settingService := service.SettingService{}
-	err = settingService.ResetSettings()
-	if err != nil {
-		fmt.Println("reset setting failed:", err)
-	} else {
-		fmt.Println("reset setting success")
-	}
-}
-
-func showSetting(show bool) {
-	if show {
-		settingService := service.SettingService{}
-		port, err := settingService.GetPort()
-		if err != nil {
-			fmt.Println("get current port failed, error info:", err)
-		}
-		userService := service.UserService{}
-		userModel, err := userService.GetFirstUser()
-		if err != nil {
-			fmt.Println("get current user info failed, error info:", err)
-		}
-		username := userModel.Username
-		userpasswd := userModel.Password
-		if (username == "") || (userpasswd == "") {
-			fmt.Println("current username or password is empty")
-		}
-		fmt.Println("current panel settings as follows:")
-		fmt.Println("username:", username)
-		fmt.Println("userpasswd:", userpasswd)
-		fmt.Println("port:", port)
-	}
-}
-
-func updateSetting(port int, username string, password string) {
-	err := database.InitDB(config.GetDBPath())
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	settingService := service.SettingService{}
-
-	if port > 0 {
-		err := settingService.SetPort(port)
-		if err != nil {
-			fmt.Println("set port failed:", err)
-		} else {
-			fmt.Printf("set port %v success", port)
-		}
-	}
-	if username != "" || password != "" {
-		userService := service.UserService{}
-		err := userService.UpdateFirstUser(username, password)
-		if err != nil {
-			fmt.Println("set username and password failed:", err)
-		} else {
-			fmt.Println("set username and password success")
-		}
-	}
-}
+var (
+	db          *gorm.DB
+	xrayProcess *os.Process
+	xrayRunning bool
+	startTime   = time.Now()
+)
 
 func main() {
-	if len(os.Args) < 2 {
-		runWebServer()
+	// 确保数据目录存在
+	os.MkdirAll("./data", 0755)
+
+	// 自动安装 Xray
+	if err := ensureXrayInstalled(); err != nil {
+		log.Printf("警告: Xray 安装失败: %v", err)
+	}
+
+	// 初始化数据库
+	var err error
+	db, err = gorm.Open(sqlite.Open("./data/rx-ui.db"), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Failed to connect database: %v", err)
+	}
+
+	// 自动迁移
+	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{})
+
+	// 创建默认用户（如果不存在）
+	var count int64
+	db.Model(&model.User{}).Count(&count)
+	if count == 0 {
+		defaultUser := &model.User{
+			Username: "admin",
+			Password: "admin123",
+			Enable:   true,
+		}
+		db.Create(defaultUser)
+		log.Println("Created default user: admin / admin123")
+	}
+
+	// 设置 Gin
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.Default()
+
+	// 设置 API 路由
+	api := r.Group("/api/v1")
+	{
+		// 健康检查
+		api.GET("/health", handleHealth)
+
+		// 认证 API
+		auth := api.Group("/auth")
+		{
+			auth.POST("/login", handleLogin)
+			auth.GET("/me", handleMe)
+		}
+
+		// 入站规则 API
+		api.GET("/inbounds", handleGetInbounds)
+		api.POST("/inbounds", handleCreateInbound)
+		api.PUT("/inbounds/:id", handleUpdateInbound)
+		api.DELETE("/inbounds/:id", handleDeleteInbound)
+		api.POST("/inbounds/:id/resetTraffic", handleResetInboundTraffic)
+
+		// 客户端 API（使用 /clients 独立路由）
+		api.GET("/clients", handleGetClients)          // ?inboundId=xxx
+		api.POST("/clients", handleCreateClient)       // body 包含 inboundId
+		api.PUT("/clients/:id", handleUpdateClient)
+		api.DELETE("/clients/:id", handleDeleteClient)
+
+		// 用户管理 API
+		users := api.Group("/users")
+		{
+			users.GET("", handleGetUsers)
+			users.POST("", handleCreateUser)
+			users.PUT("/:id/password", handleChangePassword)
+			users.DELETE("/:id", handleDeleteUser)
+		}
+
+		// 证书管理 API
+		certs := api.Group("/certificates")
+		{
+			certs.GET("", handleGetCertificates)
+			certs.POST("", handleCreateCertificate)
+			certs.PUT("/:id", handleUpdateCertificate)
+			certs.DELETE("/:id", handleDeleteCertificate)
+		}
+
+		// 系统设置 API
+		api.GET("/settings", handleGetSettings)
+		api.PUT("/settings", handleUpdateSettings)
+
+		// Xray 控制 API
+		xray := api.Group("/xray")
+		{
+			xray.GET("/status", handleXrayStatus)
+			xray.POST("/start", handleXrayStart)
+			xray.POST("/stop", handleXrayStop)
+			xray.POST("/restart", handleXrayRestart)
+		}
+
+		// 系统信息 API
+		api.GET("/system/status", handleSystemStatus)
+
+		// 订阅 API
+		api.GET("/sub", handleSubscription)
+	}
+
+	// 设置静态文件服务
+	if err := web.SetupStaticFiles(r); err != nil {
+		log.Printf("Warning: Failed to setup static files: %v", err)
+	}
+
+	// 启动服务器
+	port := "54321"
+	if p := os.Getenv("PORT"); p != "" {
+		port = p
+	}
+
+	go func() {
+		log.Printf("Rx-ui starting on :%s", port)
+		if err := r.Run(":" + port); err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// 等待中断信号
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	log.Println("Shutting down...")
+	stopXray()
+	time.Sleep(1 * time.Second)
+	log.Println("Goodbye!")
+}
+
+// ===== 健康检查 =====
+
+func handleHealth(c *gin.Context) {
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"status": "healthy"}})
+}
+
+// ===== 认证 API =====
+
+func handleLogin(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "请输入用户名和密码"})
 		return
 	}
 
-	var showVersion bool
-	flag.BoolVar(&showVersion, "v", false, "show version")
-
-	runCmd := flag.NewFlagSet("run", flag.ExitOnError)
-
-	v2uiCmd := flag.NewFlagSet("v2-ui", flag.ExitOnError)
-	var dbPath string
-	v2uiCmd.StringVar(&dbPath, "db", "/etc/v2-ui/v2-ui.db", "set v2-ui db file path")
-
-	settingCmd := flag.NewFlagSet("setting", flag.ExitOnError)
-	var port int
-	var username string
-	var password string
-	var reset bool
-	var show bool
-	settingCmd.BoolVar(&reset, "reset", false, "reset all settings")
-	settingCmd.BoolVar(&show, "show", false, "show current settings")
-	settingCmd.IntVar(&port, "port", 0, "set panel port")
-	settingCmd.StringVar(&username, "username", "", "set login username")
-	settingCmd.StringVar(&password, "password", "", "set login password")
-
-	oldUsage := flag.Usage
-	flag.Usage = func() {
-		oldUsage()
-		fmt.Println()
-		fmt.Println("Commands:")
-		fmt.Println("    run            run web panel")
-		fmt.Println("    v2-ui          migrate from v2-ui")
-		fmt.Println("    setting        set settings")
-	}
-
-	flag.Parse()
-	if showVersion {
-		fmt.Println(config.GetVersion())
+	var user model.User
+	if err := db.Where("username = ? AND password = ?", req.Username, req.Password).First(&user).Error; err != nil {
+		c.JSON(401, gin.H{"code": 1, "message": "用户名或密码错误"})
 		return
 	}
 
-	switch os.Args[1] {
-	case "run":
-		err := runCmd.Parse(os.Args[2:])
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		runWebServer()
-	case "v2-ui":
-		err := v2uiCmd.Parse(os.Args[2:])
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		err = v2ui.MigrateFromV2UI(dbPath)
-		if err != nil {
-			fmt.Println("migrate from v2-ui failed:", err)
-		}
-	case "setting":
-		err := settingCmd.Parse(os.Args[2:])
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		if reset {
-			resetSetting()
-		} else {
-			updateSetting(port, username, password)
-		}
-		if show {
-			showSetting(show)
-		}
-	default:
-		fmt.Println("expect 'run' or 'v2-ui' or 'setting' subcommands")
-		fmt.Println()
-		runCmd.Usage()
-		fmt.Println()
-		v2uiCmd.Usage()
-		fmt.Println()
-		settingCmd.Usage()
+	if !user.Enable {
+		c.JSON(403, gin.H{"code": 1, "message": "账户已禁用"})
+		return
 	}
+
+	token := "rx-ui-token-" + user.Username
+
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "登录成功",
+		"data": gin.H{
+			"token": token,
+			"user":  gin.H{"id": user.ID, "username": user.Username},
+		},
+	})
+}
+
+func handleMe(c *gin.Context) {
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"id": 1, "username": "admin"}})
+}
+
+// ===== 入站规则 API =====
+
+func handleGetInbounds(c *gin.Context) {
+	var inbounds []model.Inbound
+	db.Find(&inbounds)
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": inbounds})
+}
+
+func handleCreateInbound(c *gin.Context) {
+	var inbound model.Inbound
+	if err := c.ShouldBindJSON(&inbound); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误: " + err.Error()})
+		return
+	}
+	if inbound.Tag == "" {
+		inbound.Tag = fmt.Sprintf("inbound-%d", inbound.Port)
+	}
+	db.Create(&inbound)
+	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": inbound})
+}
+
+func handleUpdateInbound(c *gin.Context) {
+	id := c.Param("id")
+	var inbound model.Inbound
+	if err := db.First(&inbound, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "入站规则不存在"})
+		return
+	}
+	if err := c.ShouldBindJSON(&inbound); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	db.Save(&inbound)
+	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": inbound})
+}
+
+func handleDeleteInbound(c *gin.Context) {
+	id := c.Param("id")
+	// 删除关联的客户端
+	db.Where("inbound_id = ?", id).Delete(&model.Client{})
+	db.Delete(&model.Inbound{}, id)
+	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+func handleResetInboundTraffic(c *gin.Context) {
+	id := c.Param("id")
+	db.Model(&model.Inbound{}).Where("id = ?", id).Updates(map[string]interface{}{"up": 0, "down": 0})
+	c.JSON(200, gin.H{"code": 0, "message": "流量已重置"})
+}
+
+// ===== 客户端 API =====
+
+func handleGetClients(c *gin.Context) {
+	inboundId := c.Query("inboundId")
+	var clients []model.Client
+	if inboundId != "" {
+		db.Where("inbound_id = ?", inboundId).Find(&clients)
+	} else {
+		db.Find(&clients)
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": clients})
+}
+
+func handleCreateClient(c *gin.Context) {
+	var client model.Client
+	if err := c.ShouldBindJSON(&client); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	db.Create(&client)
+	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": client})
+}
+
+func handleUpdateClient(c *gin.Context) {
+	id := c.Param("id")
+	var client model.Client
+	if err := db.First(&client, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		return
+	}
+	if err := c.ShouldBindJSON(&client); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	db.Save(&client)
+	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": client})
+}
+
+func handleDeleteClient(c *gin.Context) {
+	id := c.Param("id")
+	db.Delete(&model.Client{}, id)
+	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+// ===== 用户管理 API =====
+
+func handleGetUsers(c *gin.Context) {
+	var users []model.User
+	db.Find(&users)
+	result := make([]gin.H, len(users))
+	for i, u := range users {
+		result[i] = gin.H{"id": u.ID, "username": u.Username, "enable": u.Enable, "createdAt": u.CreatedAt}
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": result})
+}
+
+func handleCreateUser(c *gin.Context) {
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "请输入用户名和密码（密码至少6位）"})
+		return
+	}
+	var existing model.User
+	if db.Where("username = ?", req.Username).First(&existing).Error == nil {
+		c.JSON(400, gin.H{"code": 1, "message": "用户名已存在"})
+		return
+	}
+	user := model.User{Username: req.Username, Password: req.Password, Enable: true}
+	db.Create(&user)
+	c.JSON(201, gin.H{"code": 0, "message": "用户已创建"})
+}
+
+func handleChangePassword(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		NewPassword string `json:"newPassword" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "密码至少6位"})
+		return
+	}
+	var user model.User
+	if err := db.First(&user, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "用户不存在"})
+		return
+	}
+	user.Password = req.NewPassword
+	db.Save(&user)
+	c.JSON(200, gin.H{"code": 0, "message": "密码已更新"})
+}
+
+func handleDeleteUser(c *gin.Context) {
+	id := c.Param("id")
+	db.Delete(&model.User{}, id)
+	c.JSON(200, gin.H{"code": 0, "message": "用户已删除"})
+}
+
+// ===== 证书管理 API =====
+
+func handleGetCertificates(c *gin.Context) {
+	var certs []model.Certificate
+	db.Find(&certs)
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": certs})
+}
+
+func handleCreateCertificate(c *gin.Context) {
+	var cert model.Certificate
+	if err := c.ShouldBindJSON(&cert); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	db.Create(&cert)
+	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": cert})
+}
+
+func handleUpdateCertificate(c *gin.Context) {
+	id := c.Param("id")
+	var cert model.Certificate
+	if err := db.First(&cert, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "证书不存在"})
+		return
+	}
+	if err := c.ShouldBindJSON(&cert); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	db.Save(&cert)
+	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": cert})
+}
+
+func handleDeleteCertificate(c *gin.Context) {
+	id := c.Param("id")
+	db.Delete(&model.Certificate{}, id)
+	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+// ===== 系统设置 API =====
+
+var settings = map[string]string{
+	"webPort":     "54321",
+	"webBasePath": "/",
+	"webCertFile": "",
+	"webKeyFile":  "",
+	"xrayBinPath": "", // 自动检测
+	"timeZone":    "Asia/Shanghai",
+}
+
+// getXrayBinPath 获取 Xray 二进制路径
+func getXrayBinPath() string {
+	if settings["xrayBinPath"] != "" {
+		return settings["xrayBinPath"]
+	}
+	return getXrayPath()
+}
+
+func handleGetSettings(c *gin.Context) {
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": settings})
+}
+
+func handleUpdateSettings(c *gin.Context) {
+	var newSettings map[string]string
+	if err := c.ShouldBindJSON(&newSettings); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	for k, v := range newSettings {
+		settings[k] = v
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "设置已更新"})
+}
+
+// ===== Xray 控制 API =====
+
+func handleXrayStatus(c *gin.Context) {
+	version := "未安装"
+	xrayBin := getXrayBinPath()
+	if _, err := os.Stat(xrayBin); err == nil {
+		out, err := exec.Command(xrayBin, "version").Output()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			if len(lines) > 0 {
+				version = strings.TrimSpace(lines[0])
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"running": xrayRunning,
+			"version": version,
+		},
+	})
+}
+
+func handleXrayStart(c *gin.Context) {
+	if xrayRunning {
+		c.JSON(400, gin.H{"code": 1, "message": "Xray 已在运行"})
+		return
+	}
+
+	if err := startXray(); err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "启动失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"code": 0, "message": "Xray 已启动"})
+}
+
+func handleXrayStop(c *gin.Context) {
+	if !xrayRunning {
+		c.JSON(400, gin.H{"code": 1, "message": "Xray 未运行"})
+		return
+	}
+
+	if err := stopXray(); err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "停止失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"code": 0, "message": "Xray 已停止"})
+}
+
+func handleXrayRestart(c *gin.Context) {
+	stopXray()
+	time.Sleep(1 * time.Second)
+
+	if err := startXray(); err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "重启失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"code": 0, "message": "Xray 已重启"})
+}
+
+func startXray() error {
+	// 确保 Xray 已安装
+	if err := ensureXrayInstalled(); err != nil {
+		return fmt.Errorf("Xray 未安装: %v", err)
+	}
+
+	// 生成配置
+	if err := generateXrayConfig(); err != nil {
+		return fmt.Errorf("生成配置失败: %v", err)
+	}
+
+	// 启动 Xray
+	xrayBin := getXrayBinPath()
+	cmd := exec.Command(xrayBin, "run", "-c", "./data/xray.json")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	xrayProcess = cmd.Process
+	xrayRunning = true
+
+	go func() {
+		cmd.Wait()
+		xrayRunning = false
+		xrayProcess = nil
+	}()
+
+	return nil
+}
+
+func stopXray() error {
+	if xrayProcess != nil {
+		if err := xrayProcess.Kill(); err != nil {
+			return err
+		}
+		xrayProcess = nil
+	}
+	xrayRunning = false
+	return nil
+}
+
+func generateXrayConfig() error {
+	var inbounds []model.Inbound
+	db.Where("enable = ?", true).Find(&inbounds)
+
+	inboundConfigs := make([]map[string]interface{}, 0)
+	for _, inbound := range inbounds {
+		cfg := buildInboundConfig(&inbound)
+		if cfg != nil {
+			inboundConfigs = append(inboundConfigs, cfg)
+		}
+	}
+
+	config := map[string]interface{}{
+		"log": map[string]interface{}{
+			"loglevel": "warning",
+		},
+		"inbounds": inboundConfigs,
+		"outbounds": []map[string]interface{}{
+			{"protocol": "freedom", "tag": "direct"},
+			{"protocol": "blackhole", "tag": "blocked"},
+		},
+		"routing": map[string]interface{}{
+			"rules": []map[string]interface{}{
+				{"type": "field", "outboundTag": "blocked", "ip": []string{"geoip:private"}},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile("./data/xray.json", data, 0644)
+}
+
+func buildInboundConfig(inbound *model.Inbound) map[string]interface{} {
+	var settings map[string]interface{}
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+
+	var streamSettings map[string]interface{}
+	if inbound.StreamSettings != "" {
+		json.Unmarshal([]byte(inbound.StreamSettings), &streamSettings)
+	}
+
+	var sniffing map[string]interface{}
+	if inbound.Sniffing != "" {
+		json.Unmarshal([]byte(inbound.Sniffing), &sniffing)
+	}
+
+	cfg := map[string]interface{}{
+		"tag":      inbound.Tag,
+		"port":     inbound.Port,
+		"protocol": inbound.Protocol,
+		"settings": settings,
+	}
+
+	if inbound.Listen != "" {
+		cfg["listen"] = inbound.Listen
+	}
+
+	if streamSettings != nil {
+		cfg["streamSettings"] = streamSettings
+	}
+
+	if sniffing != nil {
+		cfg["sniffing"] = sniffing
+	}
+
+	return cfg
+}
+
+// ===== 系统状态 API =====
+
+func handleSystemStatus(c *gin.Context) {
+	// CPU 信息
+	cpuPercent, _ := cpu.Percent(time.Second, false)
+	cpuUsage := 0.0
+	if len(cpuPercent) > 0 {
+		cpuUsage = cpuPercent[0]
+	}
+
+	// 内存信息
+	memInfo, _ := mem.VirtualMemory()
+	memTotal := uint64(0)
+	memUsed := uint64(0)
+	if memInfo != nil {
+		memTotal = memInfo.Total
+		memUsed = memInfo.Used
+	}
+
+	// 负载信息
+	loadInfo, _ := load.Avg()
+	loadAvg := []float64{0, 0, 0}
+	if loadInfo != nil {
+		loadAvg = []float64{loadInfo.Load1, loadInfo.Load5, loadInfo.Load15}
+	}
+
+	// 主机信息
+	hostInfo, _ := host.Info()
+	uptime := uint64(0)
+	if hostInfo != nil {
+		uptime = hostInfo.Uptime
+	}
+
+	// 入站规则流量统计
+	var inbounds []model.Inbound
+	db.Find(&inbounds)
+	totalUp := int64(0)
+	totalDown := int64(0)
+	for _, i := range inbounds {
+		totalUp += i.Up
+		totalDown += i.Down
+	}
+
+	// Xray 版本
+	xrayVersionStr := "未安装"
+	xrayBin := getXrayBinPath()
+	if _, err := os.Stat(xrayBin); err == nil {
+		out, err := exec.Command(xrayBin, "version").Output()
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			if len(lines) > 0 {
+				xrayVersionStr = strings.TrimSpace(lines[0])
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"cpu": gin.H{
+				"cores":   runtime.NumCPU(),
+				"percent": cpuUsage,
+			},
+			"memory": gin.H{
+				"total": memTotal,
+				"used":  memUsed,
+			},
+			"load":   loadAvg,
+			"uptime": uptime,
+			"traffic": gin.H{
+				"up":   totalUp,
+				"down": totalDown,
+			},
+			"xray": gin.H{
+				"running": xrayRunning,
+				"version": xrayVersionStr,
+			},
+			"panelUptime": int64(time.Since(startTime).Seconds()),
+			"inboundCount": len(inbounds),
+		},
+	})
+}
+
+// ===== 订阅 API =====
+
+func handleSubscription(c *gin.Context) {
+	host := c.Query("host")
+	if host == "" {
+		host = c.Request.Host
+		if strings.Contains(host, ":") {
+			host = strings.Split(host, ":")[0]
+		}
+	}
+
+	var inbounds []model.Inbound
+	db.Where("enable = ?", true).Find(&inbounds)
+
+	links := make([]string, 0)
+	for _, inbound := range inbounds {
+		link := generateInboundLink(&inbound, host)
+		if link != "" {
+			links = append(links, link)
+		}
+	}
+
+	subContent := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
+	c.Header("Content-Type", "text/plain")
+	c.String(200, subContent)
+}
+
+func generateInboundLink(inbound *model.Inbound, host string) string {
+	var settings map[string]interface{}
+	json.Unmarshal([]byte(inbound.Settings), &settings)
+
+	var streamSettings map[string]interface{}
+	if inbound.StreamSettings != "" {
+		json.Unmarshal([]byte(inbound.StreamSettings), &streamSettings)
+	}
+
+	network := "tcp"
+	security := "none"
+	wsPath := ""
+	wsHost := ""
+	grpcServiceName := ""
+	sni := ""
+
+	if streamSettings != nil {
+		if n, ok := streamSettings["network"].(string); ok {
+			network = n
+		}
+		if s, ok := streamSettings["security"].(string); ok {
+			security = s
+		}
+		if ws, ok := streamSettings["wsSettings"].(map[string]interface{}); ok {
+			if p, ok := ws["path"].(string); ok {
+				wsPath = p
+			}
+			if h, ok := ws["headers"].(map[string]interface{}); ok {
+				if hh, ok := h["Host"].(string); ok {
+					wsHost = hh
+				}
+			}
+		}
+		if grpc, ok := streamSettings["grpcSettings"].(map[string]interface{}); ok {
+			if sn, ok := grpc["serviceName"].(string); ok {
+				grpcServiceName = sn
+			}
+		}
+		if tls, ok := streamSettings["tlsSettings"].(map[string]interface{}); ok {
+			if s, ok := tls["serverName"].(string); ok {
+				sni = s
+			}
+		}
+	}
+
+	remark := inbound.Remark
+	if remark == "" {
+		remark = fmt.Sprintf("%d", inbound.Port)
+	}
+
+	switch inbound.Protocol {
+	case "vmess":
+		clients, ok := settings["clients"].([]interface{})
+		if !ok || len(clients) == 0 {
+			return ""
+		}
+		client := clients[0].(map[string]interface{})
+		uuid := client["id"].(string)
+		alterId := 0
+		if aid, ok := client["alterId"].(float64); ok {
+			alterId = int(aid)
+		}
+
+		obj := map[string]interface{}{
+			"v":    "2",
+			"ps":   remark,
+			"add":  host,
+			"port": inbound.Port,
+			"id":   uuid,
+			"aid":  alterId,
+			"net":  network,
+			"type": "none",
+			"host": wsHost,
+			"path": wsPath,
+			"tls":  security,
+		}
+		if network == "grpc" {
+			obj["path"] = grpcServiceName
+		}
+		data, _ := json.Marshal(obj)
+		return "vmess://" + base64.StdEncoding.EncodeToString(data)
+
+	case "vless":
+		clients, ok := settings["clients"].([]interface{})
+		if !ok || len(clients) == 0 {
+			return ""
+		}
+		client := clients[0].(map[string]interface{})
+		uuid := client["id"].(string)
+		flow := ""
+		if f, ok := client["flow"].(string); ok {
+			flow = f
+		}
+
+		params := fmt.Sprintf("type=%s&security=%s", network, security)
+		if network == "ws" && wsPath != "" {
+			params += "&path=" + wsPath
+		}
+		if network == "grpc" && grpcServiceName != "" {
+			params += "&serviceName=" + grpcServiceName
+		}
+		if security == "tls" && sni != "" {
+			params += "&sni=" + sni
+		}
+		if flow != "" {
+			params += "&flow=" + flow
+		}
+
+		return fmt.Sprintf("vless://%s@%s:%d?%s#%s", uuid, host, inbound.Port, params, remark)
+
+	case "trojan":
+		clients, ok := settings["clients"].([]interface{})
+		if !ok || len(clients) == 0 {
+			return ""
+		}
+		client := clients[0].(map[string]interface{})
+		password := client["password"].(string)
+
+		params := ""
+		if sni != "" {
+			params = "?sni=" + sni
+		}
+
+		return fmt.Sprintf("trojan://%s@%s:%d%s#%s", password, host, inbound.Port, params, remark)
+
+	case "shadowsocks":
+		method, _ := settings["method"].(string)
+		password, _ := settings["password"].(string)
+		userinfo := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", method, password)))
+		return fmt.Sprintf("ss://%s@%s:%d#%s", userinfo, host, inbound.Port, remark)
+	}
+
+	return ""
 }

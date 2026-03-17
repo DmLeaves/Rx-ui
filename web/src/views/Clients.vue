@@ -22,7 +22,7 @@ const clients = ref<Client[]>([])
 const showClientModal = ref(false)
 const editingClient = ref<Client | null>(null)
 const clientForm = ref<CreateClientParams>({
-  email: '',
+  remark: '',
   uuid: '',
   password: '',
   flow: '',
@@ -53,7 +53,7 @@ function formatExpiry(timestamp: number): string {
 
 const columns: DataTableColumns<Client> = [
   { title: 'ID', key: 'id', width: 60 },
-  { title: 'Email', key: 'email', ellipsis: { tooltip: true } },
+  { title: '备注', key: 'remark', ellipsis: { tooltip: true } },
   { 
     title: '状态', 
     key: 'enable',
@@ -144,7 +144,7 @@ function handleAdd() {
   editingClient.value = null
   const inbound = getCurrentInbound()
   clientForm.value = {
-    email: '',
+    remark: '',
     uuid: ['vmess', 'vless'].includes(inbound?.protocol || '') ? uuidv4() : '',
     password: '',
     flow: '',
@@ -158,7 +158,7 @@ function handleAdd() {
 function handleEdit(row: Client) {
   editingClient.value = row
   clientForm.value = {
-    email: row.email,
+    remark: row.remark || '',
     uuid: row.uuid,
     password: row.password,
     flow: row.flow,
@@ -198,47 +198,20 @@ async function handleDelete(clientId: number) {
   }
 }
 
-function handleShowQR(row: Client) {
+async function handleShowQR(row: Client) {
   const inbound = getCurrentInbound()
   if (!inbound) return
 
-  // 简化的链接生成
-  const protocol = inbound.protocol
-  let link = ''
-
-  switch (protocol) {
-    case 'vmess': {
-      const config = {
-        v: '2',
-        ps: row.email || 'client',
-        add: window.location.hostname,
-        port: inbound.port,
-        id: row.uuid,
-        aid: 0,
-        net: 'tcp',
-        type: 'none',
-        tls: ''
-      }
-      link = 'vmess://' + btoa(JSON.stringify(config))
-      break
-    }
-    case 'vless': {
-      const params = new URLSearchParams()
-      params.set('type', 'tcp')
-      if (row.flow) params.set('flow', row.flow)
-      link = `vless://${row.uuid}@${window.location.hostname}:${inbound.port}?${params.toString()}#${encodeURIComponent(row.email || 'client')}`
-      break
-    }
-    case 'trojan': {
-      link = `trojan://${row.password}@${window.location.hostname}:${inbound.port}#${encodeURIComponent(row.email || 'client')}`
-      break
-    }
-    default:
-      message.warning('该协议不支持生成二维码')
-      return
+  // 使用 link.ts 生成链接
+  const { generateClientLink } = await import('@/utils/link')
+  const link = generateClientLink(row, inbound)
+  
+  if (!link) {
+    message.warning('该协议不支持生成二维码')
+    return
   }
 
-  qrTitle.value = row.email || 'client'
+  qrTitle.value = row.remark || 'client'
   qrLink.value = link
   showQRModal.value = true
 }
@@ -303,8 +276,8 @@ onMounted(() => {
       style="width: 500px;"
     >
       <n-form label-placement="left" label-width="100">
-        <n-form-item label="Email">
-          <n-input v-model:value="clientForm.email" placeholder="用于标识客户端" />
+        <n-form-item label="备注">
+          <n-input v-model:value="clientForm.remark" placeholder="可选，用于标识客户端" />
         </n-form-item>
 
         <n-form-item v-if="['vmess', 'vless'].includes(getCurrentInbound()?.protocol || '')" label="UUID">

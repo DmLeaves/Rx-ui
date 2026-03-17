@@ -3,8 +3,8 @@ package service
 import (
 	"errors"
 
-	"Rx-ui/internal/model"
-	"Rx-ui/internal/repository"
+	"rxui/internal/model"
+	"rxui/internal/repository"
 )
 
 var (

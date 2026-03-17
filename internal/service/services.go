@@ -1,8 +1,8 @@
 package service
 
 import (
-	"Rx-ui/internal/config"
-	"Rx-ui/internal/repository"
+	"rxui/internal/config"
+	"rxui/internal/repository"
 )
 
 // Services 聚合所有服务（依赖注入容器）

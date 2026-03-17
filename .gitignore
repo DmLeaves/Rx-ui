@@ -5,6 +5,12 @@ x-ui
 
 # Database
 *.db
+data/
+
+# Xray binaries (auto-downloaded)
+bin/xray
+bin/geoip.dat
+bin/geosite.dat
 
 # IDE
 .idea/
@@ -22,7 +28,15 @@ dist/
 
 # Logs
 *.log
+rx-ui.log
 
 # Environment
 .env
 .env.local
+
+# Backup files
+*.bak
+go.mod.bak
+
+# Node modules
+node_modules/

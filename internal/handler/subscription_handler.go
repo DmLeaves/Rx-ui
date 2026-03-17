@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"Rx-ui/internal/service"
+	"rxui/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

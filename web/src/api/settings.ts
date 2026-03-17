@@ -2,25 +2,12 @@ import request from './request'
 import type { ApiResponse } from './request'
 
 export interface Settings {
-  webListen: string
-  webPort: number
+  webPort: string
   webBasePath: string
   webCertFile: string
   webKeyFile: string
-  timeLocation: string
-  frontendMode: string
-  cdnProviders: string[]
-}
-
-export interface UpdateSettingsParams {
-  webListen?: string
-  webPort?: number
-  webBasePath?: string
-  webCertFile?: string
-  webKeyFile?: string
-  timeLocation?: string
-  frontendMode?: string
-  cdnProviders?: string[]
+  xrayBinPath: string
+  timeZone: string
 }
 
 export const settingsApi = {
@@ -28,11 +15,7 @@ export const settingsApi = {
     return request.get<ApiResponse<Settings>>('/settings')
   },
 
-  update(params: UpdateSettingsParams) {
+  update(params: Partial<Settings>) {
     return request.put<ApiResponse>('/settings', params)
-  },
-
-  reset() {
-    return request.post<ApiResponse>('/settings/reset')
   }
 }

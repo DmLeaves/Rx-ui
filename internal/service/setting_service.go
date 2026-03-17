@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"Rx-ui/internal/model"
-	"Rx-ui/internal/repository"
+	"rxui/internal/model"
+	"rxui/internal/repository"
 )
 
 // SettingService 系统设置服务

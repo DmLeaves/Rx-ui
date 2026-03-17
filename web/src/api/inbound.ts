@@ -25,7 +25,7 @@ export interface Inbound {
 export interface Client {
   id: number
   inboundId: number
-  email: string
+  remark?: string
   uuid: string
   password: string
   flow: string
@@ -55,7 +55,7 @@ export interface CreateInboundParams {
 }
 
 export interface CreateClientParams {
-  email: string
+  remark?: string
   uuid?: string
   password?: string
   flow?: string
@@ -88,23 +88,23 @@ export const inboundApi = {
   },
 
   resetTraffic(id: number) {
-    return request.post<ApiResponse>(`/inbounds/${id}/reset-traffic`)
+    return request.post<ApiResponse>(`/inbounds/${id}/resetTraffic`)
   },
 
   // 客户端
   listClients(inboundId: number) {
-    return request.get<ApiResponse<Client[]>>(`/inbounds/${inboundId}/clients`)
+    return request.get<ApiResponse<Client[]>>(`/clients?inboundId=${inboundId}`)
   },
 
   addClient(inboundId: number, params: CreateClientParams) {
-    return request.post<ApiResponse<Client>>(`/inbounds/${inboundId}/clients`, params)
+    return request.post<ApiResponse<Client>>(`/clients`, { ...params, inboundId })
   },
 
-  updateClient(inboundId: number, clientId: number, params: CreateClientParams) {
-    return request.put<ApiResponse<Client>>(`/inbounds/${inboundId}/clients/${clientId}`, params)
+  updateClient(_inboundId: number, clientId: number, params: CreateClientParams) {
+    return request.put<ApiResponse<Client>>(`/clients/${clientId}`, params)
   },
 
-  deleteClient(inboundId: number, clientId: number) {
-    return request.delete<ApiResponse>(`/inbounds/${inboundId}/clients/${clientId}`)
+  deleteClient(_inboundId: number, clientId: number) {
+    return request.delete<ApiResponse>(`/clients/${clientId}`)
   }
 }

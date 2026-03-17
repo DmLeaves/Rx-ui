@@ -1,7 +1,24 @@
 import type { Inbound, Client } from '@/api/inbound'
 
 /**
- * 生成 VMess 链接
+ * Base64 编码（兼容 UTF-8）
+ */
+function base64Encode(str: string): string {
+  return btoa(unescape(encodeURIComponent(str)))
+}
+
+/**
+ * URL 安全的 Base64 编码
+ */
+function safeBase64Encode(str: string): string {
+  return base64Encode(str)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/**
+ * 生成 VMess 链接（参考 x-ui 原版）
  */
 export function generateVmessLink(
   host: string,
@@ -11,11 +28,33 @@ export function generateVmessLink(
   network: string,
   security: string,
   remark: string,
-  wsPath?: string,
+  type?: string,
   wsHost?: string,
-  grpcServiceName?: string
+  wsPath?: string,
+  grpcServiceName?: string,
+  kcpSeed?: string
 ): string {
-  const config = {
+  let netType = 'none'
+  let netHost = ''
+  let netPath = ''
+
+  if (network === 'tcp') {
+    netType = type || 'none'
+  } else if (network === 'kcp') {
+    netType = type || 'none'
+    netPath = kcpSeed || ''
+  } else if (network === 'ws') {
+    netPath = wsPath || ''
+    netHost = wsHost || ''
+  } else if (network === 'http' || network === 'h2') {
+    network = 'h2'
+    netPath = wsPath || ''
+    netHost = wsHost || ''
+  } else if (network === 'grpc') {
+    netPath = grpcServiceName || ''
+  }
+
+  const obj = {
     v: '2',
     ps: remark,
     add: host,
@@ -23,21 +62,18 @@ export function generateVmessLink(
     id: uuid,
     aid: alterId,
     net: network,
-    type: 'none',
-    host: wsHost || '',
-    path: wsPath || '',
+    type: netType,
+    host: netHost,
+    path: netPath,
     tls: security === 'tls' ? 'tls' : ''
   }
 
-  if (network === 'grpc') {
-    config.path = grpcServiceName || ''
-  }
-
-  return 'vmess://' + btoa(JSON.stringify(config))
+  // x-ui 原版使用格式化的 JSON
+  return 'vmess://' + base64Encode(JSON.stringify(obj, null, 2))
 }
 
 /**
- * 生成 VLESS 链接
+ * 生成 VLESS 链接（参考 x-ui 原版）
  */
 export function generateVlessLink(
   host: string,
@@ -48,40 +84,83 @@ export function generateVlessLink(
   remark: string,
   flow?: string,
   wsPath?: string,
+  wsHost?: string,
   grpcServiceName?: string,
-  sni?: string
+  sni?: string,
+  headerType?: string,
+  kcpSeed?: string
 ): string {
   const params = new URLSearchParams()
   params.set('type', network)
+  params.set('security', security || 'none')
 
-  if (security) params.set('security', security)
-  if (flow) params.set('flow', flow)
-  if (wsPath && network === 'ws') params.set('path', wsPath)
-  if (grpcServiceName && network === 'grpc') params.set('serviceName', grpcServiceName)
-  if (sni && security === 'tls') params.set('sni', sni)
+  switch (network) {
+    case 'tcp':
+      if (headerType && headerType !== 'none') {
+        params.set('headerType', headerType)
+      }
+      break
+    case 'kcp':
+      if (headerType) params.set('headerType', headerType)
+      if (kcpSeed) params.set('seed', kcpSeed)
+      break
+    case 'ws':
+      if (wsPath) params.set('path', wsPath)
+      if (wsHost) params.set('host', wsHost)
+      break
+    case 'http':
+    case 'h2':
+      if (wsPath) params.set('path', wsPath)
+      if (wsHost) params.set('host', wsHost)
+      break
+    case 'grpc':
+      if (grpcServiceName) params.set('serviceName', grpcServiceName)
+      break
+  }
 
-  return `vless://${uuid}@${host}:${port}?${params.toString()}#${encodeURIComponent(remark)}`
+  if (security === 'tls' || security === 'xtls') {
+    if (sni) params.set('sni', sni)
+  }
+
+  if (security === 'xtls' && flow) {
+    params.set('flow', flow)
+  }
+
+  const url = new URL(`vless://${uuid}@${host}:${port}`)
+  url.search = params.toString()
+  url.hash = encodeURIComponent(remark)
+  
+  return url.toString()
 }
 
 /**
- * 生成 Trojan 链接
+ * 生成 Trojan 链接（参考 x-ui 原版）
  */
 export function generateTrojanLink(
   host: string,
   port: number,
   password: string,
   remark: string,
-  sni?: string
+  sni?: string,
+  network?: string,
+  wsPath?: string,
+  grpcServiceName?: string
 ): string {
   const params = new URLSearchParams()
+  
   if (sni) params.set('sni', sni)
+  if (network && network !== 'tcp') {
+    params.set('type', network)
+    if (network === 'ws' && wsPath) params.set('path', wsPath)
+    if (network === 'grpc' && grpcServiceName) params.set('serviceName', grpcServiceName)
+  }
 
   const query = params.toString()
-  return `trojan://${password}@${host}:${port}${query ? '?' + query : ''}#${encodeURIComponent(remark)}`
+  return `trojan://${encodeURIComponent(password)}@${host}:${port}${query ? '?' + query : ''}#${encodeURIComponent(remark)}`
 }
 
 /**
- * 生成 Shadowsocks 链接
+ * 生成 Shadowsocks 链接（参考 x-ui 原版）
  */
 export function generateShadowsocksLink(
   host: string,
@@ -90,8 +169,34 @@ export function generateShadowsocksLink(
   password: string,
   remark: string
 ): string {
-  const userinfo = btoa(`${method}:${password}`)
+  // x-ui 使用 safeBase64 编码 method:password
+  const userinfo = safeBase64Encode(`${method}:${password}`)
   return `ss://${userinfo}@${host}:${port}#${encodeURIComponent(remark)}`
+}
+
+/**
+ * 解析入站规则的流设置
+ */
+function parseStreamSettings(streamSettingsStr: string) {
+  try {
+    const stream = JSON.parse(streamSettingsStr || '{}')
+    return {
+      network: stream.network || 'tcp',
+      security: stream.security || 'none',
+      wsPath: stream.wsSettings?.path,
+      wsHost: stream.wsSettings?.headers?.Host,
+      grpcServiceName: stream.grpcSettings?.serviceName,
+      sni: stream.tlsSettings?.serverName || stream.xtlsSettings?.serverName,
+      tcpHeaderType: stream.tcpSettings?.header?.type,
+      kcpHeaderType: stream.kcpSettings?.header?.type,
+      kcpSeed: stream.kcpSettings?.seed
+    }
+  } catch {
+    return {
+      network: 'tcp',
+      security: 'none'
+    }
+  }
 }
 
 /**
@@ -102,14 +207,7 @@ export function generateInboundLink(inbound: Inbound, host?: string): string {
 
   try {
     const settings = JSON.parse(inbound.settings || '{}')
-    const streamSettings = JSON.parse(inbound.streamSettings || '{}')
-
-    const network = streamSettings.network || 'tcp'
-    const security = streamSettings.security || 'none'
-    const wsPath = streamSettings.wsSettings?.path
-    const wsHost = streamSettings.wsSettings?.headers?.Host
-    const grpcServiceName = streamSettings.grpcSettings?.serviceName
-    const sni = streamSettings.tlsSettings?.serverName
+    const stream = parseStreamSettings(inbound.streamSettings)
 
     switch (inbound.protocol) {
       case 'vmess': {
@@ -120,12 +218,14 @@ export function generateInboundLink(inbound: Inbound, host?: string): string {
           inbound.port,
           client.id,
           client.alterId || 0,
-          network,
-          security,
+          stream.network,
+          stream.security,
           inbound.remark || `${inbound.port}`,
-          wsPath,
-          wsHost,
-          grpcServiceName
+          stream.tcpHeaderType,
+          stream.wsHost,
+          stream.wsPath,
+          stream.grpcServiceName,
+          stream.kcpSeed
         )
       }
 
@@ -136,13 +236,16 @@ export function generateInboundLink(inbound: Inbound, host?: string): string {
           targetHost,
           inbound.port,
           client.id,
-          network,
-          security,
+          stream.network,
+          stream.security,
           inbound.remark || `${inbound.port}`,
           client.flow,
-          wsPath,
-          grpcServiceName,
-          sni
+          stream.wsPath,
+          stream.wsHost,
+          stream.grpcServiceName,
+          stream.sni,
+          stream.tcpHeaderType || stream.kcpHeaderType,
+          stream.kcpSeed
         )
       }
 
@@ -154,7 +257,10 @@ export function generateInboundLink(inbound: Inbound, host?: string): string {
           inbound.port,
           client.password,
           inbound.remark || `${inbound.port}`,
-          sni
+          stream.sni,
+          stream.network,
+          stream.wsPath,
+          stream.grpcServiceName
         )
       }
 
@@ -186,16 +292,10 @@ export function generateClientLink(
   host?: string
 ): string {
   const targetHost = host || window.location.hostname
+  const stream = parseStreamSettings(inbound.streamSettings)
+  const remark = client.remark || inbound.remark || `${inbound.port}`
 
   try {
-    const streamSettings = JSON.parse(inbound.streamSettings || '{}')
-    const network = streamSettings.network || 'tcp'
-    const security = streamSettings.security || 'none'
-    const wsPath = streamSettings.wsSettings?.path
-    const wsHost = streamSettings.wsSettings?.headers?.Host
-    const grpcServiceName = streamSettings.grpcSettings?.serviceName
-    const sni = streamSettings.tlsSettings?.serverName
-
     switch (inbound.protocol) {
       case 'vmess':
         return generateVmessLink(
@@ -203,12 +303,14 @@ export function generateClientLink(
           inbound.port,
           client.uuid,
           0,
-          network,
-          security,
-          client.email || 'client',
-          wsPath,
-          wsHost,
-          grpcServiceName
+          stream.network,
+          stream.security,
+          remark,
+          stream.tcpHeaderType,
+          stream.wsHost,
+          stream.wsPath,
+          stream.grpcServiceName,
+          stream.kcpSeed
         )
 
       case 'vless':
@@ -216,13 +318,16 @@ export function generateClientLink(
           targetHost,
           inbound.port,
           client.uuid,
-          network,
-          security,
-          client.email || 'client',
+          stream.network,
+          stream.security,
+          remark,
           client.flow,
-          wsPath,
-          grpcServiceName,
-          sni
+          stream.wsPath,
+          stream.wsHost,
+          stream.grpcServiceName,
+          stream.sni,
+          stream.tcpHeaderType || stream.kcpHeaderType,
+          stream.kcpSeed
         )
 
       case 'trojan':
@@ -230,8 +335,11 @@ export function generateClientLink(
           targetHost,
           inbound.port,
           client.password,
-          client.email || 'client',
-          sni
+          remark,
+          stream.sni,
+          stream.network,
+          stream.wsPath,
+          stream.grpcServiceName
         )
 
       default:
@@ -252,5 +360,5 @@ export function generateSubscription(inbounds: Inbound[], host?: string): string
     .map(i => generateInboundLink(i, host))
     .filter(link => link)
 
-  return btoa(links.join('\n'))
+  return base64Encode(links.join('\n'))
 }

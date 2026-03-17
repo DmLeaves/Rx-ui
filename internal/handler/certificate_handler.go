@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"time"
 
-	"Rx-ui/internal/model"
-	"Rx-ui/internal/service"
+	"rxui/internal/model"
+	"rxui/internal/service"
 
 	"github.com/gin-gonic/gin"
 )

@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"time"
 
-	"Rx-ui/internal/service"
+	"rxui/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shirou/gopsutil/cpu"

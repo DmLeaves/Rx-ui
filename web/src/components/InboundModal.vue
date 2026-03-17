@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NTabs, NTabPane, NButton, NSpace, NDivider } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NButton, NSpace, NDatePicker, NTooltip, NIcon, NCard, NGrid, NGridItem } from 'naive-ui'
+import { HelpCircleOutline } from '@vicons/ionicons5'
 import type { CreateInboundParams } from '@/api/inbound'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -31,10 +32,24 @@ const formData = ref<CreateInboundParams>({
   expiryTime: 0
 })
 
+// 流量限制（GB）
+const totalGB = computed({
+  get: () => formData.value.total ? formData.value.total / (1024 * 1024 * 1024) : 0,
+  set: (v: number) => { formData.value.total = v * 1024 * 1024 * 1024 }
+})
+
+// 到期时间
+const expiryDate = computed({
+  get: () => formData.value.expiryTime ? formData.value.expiryTime : null,
+  set: (v: number | null) => { formData.value.expiryTime = v || 0 }
+})
+
 // 协议特定设置
 const protocolSettings = ref({
   // VMess/VLESS
-  clients: [{ id: '', email: '', alterId: 0, flow: '' }],
+  uuid: '',
+  alterId: 0,
+  flow: '',
   // Shadowsocks
   method: 'aes-256-gcm',
   password: '',
@@ -42,7 +57,8 @@ const protocolSettings = ref({
   trojanPassword: '',
   // SOCKS/HTTP
   auth: 'noauth',
-  accounts: [{ user: '', pass: '' }],
+  user: '',
+  pass: '',
   // Dokodemo-door
   address: '',
   followRedirect: false,
@@ -55,7 +71,6 @@ const streamSettings = ref({
   security: 'none',
   // TLS
   serverName: '',
-  allowInsecure: false,
   // TCP
   tcpHeaderType: 'none',
   // WS
@@ -63,9 +78,9 @@ const streamSettings = ref({
   wsHost: '',
   // gRPC
   grpcServiceName: '',
-  // HTTP/2
-  h2Path: '/',
-  h2Host: ''
+  // KCP
+  kcpType: 'none',
+  kcpSeed: ''
 })
 
 // 嗅探设置
@@ -75,44 +90,64 @@ const sniffingSettings = ref({
 })
 
 const protocolOptions = [
-  { label: 'VMess', value: 'vmess' },
-  { label: 'VLESS', value: 'vless' },
-  { label: 'Trojan', value: 'trojan' },
-  { label: 'Shadowsocks', value: 'shadowsocks' },
-  { label: 'Dokodemo-door', value: 'dokodemo-door' },
-  { label: 'SOCKS', value: 'socks' },
-  { label: 'HTTP', value: 'http' }
+  { label: 'vmess', value: 'vmess' },
+  { label: 'vless', value: 'vless' },
+  { label: 'trojan', value: 'trojan' },
+  { label: 'shadowsocks', value: 'shadowsocks' },
+  { label: 'dokodemo-door', value: 'dokodemo-door' },
+  { label: 'socks', value: 'socks' },
+  { label: 'http', value: 'http' }
 ]
 
 const networkOptions = [
-  { label: 'TCP', value: 'tcp' },
-  { label: 'WebSocket', value: 'ws' },
-  { label: 'gRPC', value: 'grpc' },
-  { label: 'HTTP/2', value: 'http' },
-  { label: 'KCP', value: 'kcp' },
-  { label: 'QUIC', value: 'quic' }
+  { label: 'tcp', value: 'tcp' },
+  { label: 'kcp', value: 'kcp' },
+  { label: 'ws', value: 'ws' },
+  { label: 'http', value: 'http' },
+  { label: 'quic', value: 'quic' },
+  { label: 'grpc', value: 'grpc' }
 ]
 
 const securityOptions = [
-  { label: '无', value: 'none' },
-  { label: 'TLS', value: 'tls' },
-  { label: 'Reality', value: 'reality' }
+  { label: 'none', value: 'none' },
+  { label: 'tls', value: 'tls' }
 ]
 
 const ssMethodOptions = [
   { label: 'aes-256-gcm', value: 'aes-256-gcm' },
   { label: 'aes-128-gcm', value: 'aes-128-gcm' },
-  { label: 'chacha20-poly1305', value: 'chacha20-poly1305' },
-  { label: 'xchacha20-poly1305', value: 'xchacha20-poly1305' }
+  { label: 'chacha20-poly1305', value: 'chacha20-poly1305' }
+]
+
+const headerTypeOptions = [
+  { label: 'none', value: 'none' },
+  { label: 'http', value: 'http' }
 ]
 
 const flowOptions = [
   { label: '无', value: '' },
-  { label: 'xtls-rprx-vision', value: 'xtls-rprx-vision' }
+  { label: 'xtls-rprx-vision', value: 'xtls-rprx-vision' },
+  { label: 'xtls-rprx-direct', value: 'xtls-rprx-direct' }
 ]
 
+// 是否可以设置传输
+const canEnableStream = computed(() => 
+  ['vmess', 'vless', 'shadowsocks'].includes(formData.value.protocol)
+)
+
+// 是否可以设置 TLS
+const canEnableTls = computed(() => 
+  ['vmess', 'vless', 'trojan', 'shadowsocks'].includes(formData.value.protocol) &&
+  ['tcp', 'ws', 'http', 'grpc'].includes(streamSettings.value.network)
+)
+
+// 是否可以设置嗅探
+const canSniffing = computed(() => 
+  ['vmess', 'vless', 'trojan', 'shadowsocks'].includes(formData.value.protocol)
+)
+
 function generateUUID() {
-  protocolSettings.value.clients[0].id = uuidv4()
+  protocolSettings.value.uuid = uuidv4()
 }
 
 function generatePassword() {
@@ -121,8 +156,15 @@ function generatePassword() {
   for (let i = 0; i < 16; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length))
   }
-  protocolSettings.value.password = result
-  protocolSettings.value.trojanPassword = result
+  return result
+}
+
+function generateSsPassword() {
+  protocolSettings.value.password = generatePassword()
+}
+
+function generateTrojanPassword() {
+  protocolSettings.value.trojanPassword = generatePassword()
 }
 
 function buildSettings(): string {
@@ -132,35 +174,32 @@ function buildSettings(): string {
   switch (protocol) {
     case 'vmess':
       settings = {
-        clients: protocolSettings.value.clients.map(c => ({
-          id: c.id || uuidv4(),
-          alterId: c.alterId || 0,
-          email: c.email || ''
-        }))
+        clients: [{
+          id: protocolSettings.value.uuid || uuidv4(),
+          alterId: protocolSettings.value.alterId || 0
+        }]
       }
       break
     case 'vless':
       settings = {
-        clients: protocolSettings.value.clients.map(c => ({
-          id: c.id || uuidv4(),
-          flow: c.flow || '',
-          email: c.email || ''
-        })),
+        clients: [{
+          id: protocolSettings.value.uuid || uuidv4(),
+          flow: protocolSettings.value.flow || ''
+        }],
         decryption: 'none'
       }
       break
     case 'trojan':
       settings = {
         clients: [{
-          password: protocolSettings.value.trojanPassword,
-          email: protocolSettings.value.clients[0].email
+          password: protocolSettings.value.trojanPassword || generatePassword()
         }]
       }
       break
     case 'shadowsocks':
       settings = {
         method: protocolSettings.value.method,
-        password: protocolSettings.value.password,
+        password: protocolSettings.value.password || generatePassword(),
         network: 'tcp,udp'
       }
       break
@@ -177,7 +216,7 @@ function buildSettings(): string {
       if (protocolSettings.value.auth === 'password') {
         settings = {
           auth: 'password',
-          accounts: protocolSettings.value.accounts
+          accounts: [{ user: protocolSettings.value.user, pass: protocolSettings.value.pass }]
         }
       }
       break
@@ -193,11 +232,16 @@ function buildStreamSettings(): string {
     security: ss.security
   }
 
-  // 网络设置
   switch (ss.network) {
     case 'tcp':
       result.tcpSettings = {
         header: { type: ss.tcpHeaderType }
+      }
+      break
+    case 'kcp':
+      result.kcpSettings = {
+        header: { type: ss.kcpType },
+        seed: ss.kcpSeed
       }
       break
     case 'ws':
@@ -211,19 +255,11 @@ function buildStreamSettings(): string {
         serviceName: ss.grpcServiceName
       }
       break
-    case 'http':
-      result.httpSettings = {
-        path: ss.h2Path,
-        host: ss.h2Host ? [ss.h2Host] : []
-      }
-      break
   }
 
-  // TLS 设置
   if (ss.security === 'tls') {
     result.tlsSettings = {
-      serverName: ss.serverName,
-      allowInsecure: ss.allowInsecure
+      serverName: ss.serverName
     }
   }
 
@@ -249,14 +285,6 @@ function handleClose() {
   emit('update:show', false)
 }
 
-// 监听编辑数据
-watch(() => props.editData, (data) => {
-  if (data) {
-    formData.value = { ...data }
-    // TODO: 解析 settings/streamSettings/sniffing
-  }
-}, { immediate: true })
-
 // 监听显示状态，重置表单
 watch(() => props.show, (show) => {
   if (show && !props.editData) {
@@ -273,7 +301,9 @@ watch(() => props.show, (show) => {
       total: 0,
       expiryTime: 0
     }
-    protocolSettings.value.clients[0].id = uuidv4()
+    protocolSettings.value.uuid = uuidv4()
+    protocolSettings.value.password = generatePassword()
+    protocolSettings.value.trojanPassword = generatePassword()
   }
 })
 </script>
@@ -283,76 +313,141 @@ watch(() => props.show, (show) => {
     :show="show"
     :title="title"
     preset="card"
-    style="width: 700px;"
+    style="width: 750px; max-height: 90vh;"
     :mask-closable="false"
     @update:show="handleClose"
   >
-    <n-tabs type="line">
-      <n-tab-pane name="basic" tab="基础设置">
-        <n-form label-placement="left" label-width="100">
-          <n-form-item label="备注">
-            <n-input v-model:value="formData.remark" placeholder="可选" />
-          </n-form-item>
-          <n-form-item label="启用">
-            <n-switch v-model:value="formData.enable" />
-          </n-form-item>
-          <n-form-item label="监听 IP">
-            <n-input v-model:value="formData.listen" placeholder="留空监听所有" />
-          </n-form-item>
-          <n-form-item label="端口">
-            <n-input-number v-model:value="formData.port" :min="1" :max="65535" style="width: 100%;" />
-          </n-form-item>
-          <n-form-item label="协议">
-            <n-select v-model:value="formData.protocol" :options="protocolOptions" />
-          </n-form-item>
+    <div style="max-height: 70vh; overflow-y: auto; padding-right: 10px;">
+      <!-- 基础设置 -->
+      <n-card size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
+          <n-grid :cols="2" :x-gap="24">
+            <n-grid-item>
+              <n-form-item label="备注">
+                <n-input v-model:value="formData.remark" placeholder="" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item>
+              <n-form-item label="启用">
+                <n-switch v-model:value="formData.enable" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item>
+              <n-form-item label="协议">
+                <n-select v-model:value="formData.protocol" :options="protocolOptions" style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item>
+              <n-form-item>
+                <template #label>
+                  监听 IP
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" style="vertical-align: middle; margin-left: 4px;" />
+                    </template>
+                    默认留空即可
+                  </n-tooltip>
+                </template>
+                <n-input v-model:value="formData.listen" placeholder="" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item>
+              <n-form-item label="端口">
+                <n-input-number v-model:value="formData.port" :min="1" :max="65535" style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item>
+              <n-form-item>
+                <template #label>
+                  总流量(GB)
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" style="vertical-align: middle; margin-left: 4px;" />
+                    </template>
+                    0 表示不限制
+                  </n-tooltip>
+                </template>
+                <n-input-number v-model:value="totalGB" :min="0" :precision="2" style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item :span="2">
+              <n-form-item>
+                <template #label>
+                  到期时间
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-icon :component="HelpCircleOutline" style="vertical-align: middle; margin-left: 4px;" />
+                    </template>
+                    留空则永不到期
+                  </n-tooltip>
+                </template>
+                <n-date-picker v-model:value="expiryDate" type="datetime" clearable style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+          </n-grid>
         </n-form>
-      </n-tab-pane>
+      </n-card>
 
-      <n-tab-pane name="protocol" tab="协议设置">
-        <!-- VMess / VLESS -->
-        <n-form v-if="formData.protocol === 'vmess' || formData.protocol === 'vless'" label-placement="left" label-width="100">
+      <!-- VMess 设置 -->
+      <n-card v-if="formData.protocol === 'vmess'" title="VMess 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="UUID">
             <n-space>
-              <n-input v-model:value="protocolSettings.clients[0].id" style="width: 320px;" />
+              <n-input v-model:value="protocolSettings.uuid" style="width: 340px;" />
               <n-button @click="generateUUID">生成</n-button>
             </n-space>
           </n-form-item>
-          <n-form-item v-if="formData.protocol === 'vmess'" label="AlterID">
-            <n-input-number v-model:value="protocolSettings.clients[0].alterId" :min="0" />
-          </n-form-item>
-          <n-form-item v-if="formData.protocol === 'vless'" label="Flow">
-            <n-select v-model:value="protocolSettings.clients[0].flow" :options="flowOptions" />
-          </n-form-item>
-          <n-form-item label="Email">
-            <n-input v-model:value="protocolSettings.clients[0].email" placeholder="可选，用于标识" />
+          <n-form-item label="alterId">
+            <n-input-number v-model:value="protocolSettings.alterId" :min="0" style="width: 150px;" />
           </n-form-item>
         </n-form>
+      </n-card>
 
-        <!-- Trojan -->
-        <n-form v-else-if="formData.protocol === 'trojan'" label-placement="left" label-width="100">
+      <!-- VLESS 设置 -->
+      <n-card v-if="formData.protocol === 'vless'" title="VLESS 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
+          <n-form-item label="UUID">
+            <n-space>
+              <n-input v-model:value="protocolSettings.uuid" style="width: 340px;" />
+              <n-button @click="generateUUID">生成</n-button>
+            </n-space>
+          </n-form-item>
+          <n-form-item label="flow">
+            <n-select v-model:value="protocolSettings.flow" :options="flowOptions" style="width: 200px;" />
+          </n-form-item>
+        </n-form>
+      </n-card>
+
+      <!-- Trojan 设置 -->
+      <n-card v-if="formData.protocol === 'trojan'" title="Trojan 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="密码">
             <n-space>
-              <n-input v-model:value="protocolSettings.trojanPassword" style="width: 320px;" />
-              <n-button @click="generatePassword">生成</n-button>
+              <n-input v-model:value="protocolSettings.trojanPassword" style="width: 340px;" />
+              <n-button @click="generateTrojanPassword">生成</n-button>
             </n-space>
           </n-form-item>
         </n-form>
+      </n-card>
 
-        <!-- Shadowsocks -->
-        <n-form v-else-if="formData.protocol === 'shadowsocks'" label-placement="left" label-width="100">
+      <!-- Shadowsocks 设置 -->
+      <n-card v-if="formData.protocol === 'shadowsocks'" title="Shadowsocks 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="加密方式">
-            <n-select v-model:value="protocolSettings.method" :options="ssMethodOptions" />
+            <n-select v-model:value="protocolSettings.method" :options="ssMethodOptions" style="width: 200px;" />
           </n-form-item>
           <n-form-item label="密码">
             <n-space>
-              <n-input v-model:value="protocolSettings.password" style="width: 320px;" />
-              <n-button @click="generatePassword">生成</n-button>
+              <n-input v-model:value="protocolSettings.password" style="width: 340px;" />
+              <n-button @click="generateSsPassword">生成</n-button>
             </n-space>
           </n-form-item>
         </n-form>
+      </n-card>
 
-        <!-- Dokodemo-door -->
-        <n-form v-else-if="formData.protocol === 'dokodemo-door'" label-placement="left" label-width="100">
+      <!-- Dokodemo-door 设置 -->
+      <n-card v-if="formData.protocol === 'dokodemo-door'" title="Dokodemo-door 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="目标地址">
             <n-input v-model:value="protocolSettings.address" placeholder="转发目标地址" />
           </n-form-item>
@@ -363,42 +458,59 @@ watch(() => props.show, (show) => {
             <n-switch v-model:value="protocolSettings.followRedirect" />
           </n-form-item>
         </n-form>
+      </n-card>
 
-        <!-- SOCKS / HTTP -->
-        <n-form v-else label-placement="left" label-width="100">
+      <!-- SOCKS/HTTP 设置 -->
+      <n-card v-if="formData.protocol === 'socks' || formData.protocol === 'http'" :title="formData.protocol.toUpperCase() + ' 设置'" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="认证方式">
-            <n-select v-model:value="protocolSettings.auth" :options="[{ label: '无认证', value: 'noauth' }, { label: '密码认证', value: 'password' }]" />
+            <n-select v-model:value="protocolSettings.auth" :options="[{ label: '无认证', value: 'noauth' }, { label: '密码认证', value: 'password' }]" style="width: 150px;" />
           </n-form-item>
           <template v-if="protocolSettings.auth === 'password'">
             <n-form-item label="用户名">
-              <n-input v-model:value="protocolSettings.accounts[0].user" />
+              <n-input v-model:value="protocolSettings.user" style="width: 200px;" />
             </n-form-item>
             <n-form-item label="密码">
-              <n-input v-model:value="protocolSettings.accounts[0].pass" />
+              <n-input v-model:value="protocolSettings.pass" style="width: 200px;" />
             </n-form-item>
           </template>
         </n-form>
-      </n-tab-pane>
+      </n-card>
 
-      <n-tab-pane name="stream" tab="传输设置">
-        <n-form label-placement="left" label-width="100">
-          <n-form-item label="传输协议">
-            <n-select v-model:value="streamSettings.network" :options="networkOptions" />
-          </n-form-item>
-          <n-form-item label="安全性">
-            <n-select v-model:value="streamSettings.security" :options="securityOptions" />
-          </n-form-item>
+      <!-- 传输设置 -->
+      <n-card v-if="canEnableStream" title="传输设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="80" label-placement="left">
+          <n-grid :cols="2" :x-gap="24">
+            <n-grid-item>
+              <n-form-item label="传输协议">
+                <n-select v-model:value="streamSettings.network" :options="networkOptions" style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+            <n-grid-item v-if="canEnableTls">
+              <n-form-item label="安全性">
+                <n-select v-model:value="streamSettings.security" :options="securityOptions" style="width: 100%;" />
+              </n-form-item>
+            </n-grid-item>
+          </n-grid>
 
-          <n-divider />
-
-          <!-- TCP -->
+          <!-- TCP 设置 -->
           <template v-if="streamSettings.network === 'tcp'">
             <n-form-item label="伪装类型">
-              <n-select v-model:value="streamSettings.tcpHeaderType" :options="[{ label: '无', value: 'none' }, { label: 'HTTP', value: 'http' }]" />
+              <n-select v-model:value="streamSettings.tcpHeaderType" :options="headerTypeOptions" style="width: 150px;" />
             </n-form-item>
           </template>
 
-          <!-- WebSocket -->
+          <!-- KCP 设置 -->
+          <template v-if="streamSettings.network === 'kcp'">
+            <n-form-item label="伪装类型">
+              <n-select v-model:value="streamSettings.kcpType" :options="headerTypeOptions" style="width: 150px;" />
+            </n-form-item>
+            <n-form-item label="seed">
+              <n-input v-model:value="streamSettings.kcpSeed" placeholder="可选" style="width: 200px;" />
+            </n-form-item>
+          </template>
+
+          <!-- WebSocket 设置 -->
           <template v-if="streamSettings.network === 'ws'">
             <n-form-item label="路径">
               <n-input v-model:value="streamSettings.wsPath" placeholder="/" />
@@ -408,28 +520,27 @@ watch(() => props.show, (show) => {
             </n-form-item>
           </template>
 
-          <!-- gRPC -->
+          <!-- gRPC 设置 -->
           <template v-if="streamSettings.network === 'grpc'">
-            <n-form-item label="ServiceName">
+            <n-form-item label="serviceName">
               <n-input v-model:value="streamSettings.grpcServiceName" />
             </n-form-item>
           </template>
-
-          <!-- TLS -->
-          <template v-if="streamSettings.security === 'tls'">
-            <n-divider>TLS 设置</n-divider>
-            <n-form-item label="服务器名称">
-              <n-input v-model:value="streamSettings.serverName" placeholder="SNI" />
-            </n-form-item>
-            <n-form-item label="允许不安全">
-              <n-switch v-model:value="streamSettings.allowInsecure" />
-            </n-form-item>
-          </template>
         </n-form>
-      </n-tab-pane>
+      </n-card>
 
-      <n-tab-pane name="sniffing" tab="嗅探设置">
-        <n-form label-placement="left" label-width="100">
+      <!-- TLS 设置 -->
+      <n-card v-if="canEnableTls && streamSettings.security === 'tls'" title="TLS 设置" size="small" style="margin-bottom: 16px;">
+        <n-form :label-width="100" label-placement="left">
+          <n-form-item label="服务器名称">
+            <n-input v-model:value="streamSettings.serverName" placeholder="SNI，留空自动使用域名" />
+          </n-form-item>
+        </n-form>
+      </n-card>
+
+      <!-- 嗅探设置 -->
+      <n-card v-if="canSniffing" title="嗅探设置" size="small">
+        <n-form :label-width="80" label-placement="left">
           <n-form-item label="启用嗅探">
             <n-switch v-model:value="sniffingSettings.enabled" />
           </n-form-item>
@@ -438,16 +549,17 @@ watch(() => props.show, (show) => {
               v-model:value="sniffingSettings.destOverride"
               multiple
               :options="[
-                { label: 'HTTP', value: 'http' },
-                { label: 'TLS', value: 'tls' },
-                { label: 'QUIC', value: 'quic' },
-                { label: 'FAKEDNS', value: 'fakedns' }
+                { label: 'http', value: 'http' },
+                { label: 'tls', value: 'tls' },
+                { label: 'quic', value: 'quic' },
+                { label: 'fakedns', value: 'fakedns' }
               ]"
+              style="width: 300px;"
             />
           </n-form-item>
         </n-form>
-      </n-tab-pane>
-    </n-tabs>
+      </n-card>
+    </div>
 
     <template #footer>
       <n-space justify="end">

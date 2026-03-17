@@ -71,7 +71,7 @@ func (i *Inbound) IsTrafficExceeded() bool {
 type Client struct {
 	ID         int      `json:"id" gorm:"primaryKey;autoIncrement"`
 	InboundID  int      `json:"inboundId" gorm:"index"`           // 关联入站规则
-	Email      string   `json:"email" gorm:"size:128;index"`      // 客户端标识（用于流量统计）
+	Remark     string   `json:"remark" gorm:"size:128"`           // 备注（可选）
 	UUID       string   `json:"uuid" gorm:"size:64"`              // VMess/VLESS UUID
 	Password   string   `json:"password" gorm:"size:128"`         // Trojan/SS 密码
 	Flow       string   `json:"flow" gorm:"size:32"`              // VLESS flow
