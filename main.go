@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"os"
@@ -107,6 +109,7 @@ func main() {
 		certs := api.Group("/certificates")
 		{
 			certs.GET("", handleGetCertificates)
+			certs.GET("/expiring", handleGetExpiringCertificates)
 			certs.POST("", handleCreateCertificate)
 			certs.PUT("/:id", handleUpdateCertificate)
 			certs.DELETE("/:id", handleDeleteCertificate)
@@ -125,6 +128,10 @@ func main() {
 			xray.POST("/restart", handleXrayRestart)
 		}
 
+		// 流量统计 API
+		api.GET("/traffic", handleGetTraffic)
+		api.GET("/traffic/:tag", handleGetTrafficByTag)
+
 		// 系统信息 API
 		api.GET("/system/status", handleSystemStatus)
 
@@ -136,6 +143,9 @@ func main() {
 	if err := web.SetupStaticFiles(r); err != nil {
 		log.Printf("Warning: Failed to setup static files: %v", err)
 	}
+
+	// 启动流量同步任务
+	startTrafficSyncJob()
 
 	// 启动服务器
 	port := "54321"
@@ -370,6 +380,13 @@ func handleCreateCertificate(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+
+	if cert.Domain == "" {
+		c.JSON(400, gin.H{"code": 1, "message": "domain 不能为空"})
+		return
+	}
+
+	fillCertMeta(&cert)
 	db.Create(&cert)
 	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": cert})
 }
@@ -385,14 +402,60 @@ func handleUpdateCertificate(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+
+	fillCertMeta(&cert)
 	db.Save(&cert)
 	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": cert})
+}
+
+func handleGetExpiringCertificates(c *gin.Context) {
+	days := 30
+	if q := c.Query("days"); q != "" {
+		fmt.Sscanf(q, "%d", &days)
+		if days <= 0 {
+			days = 30
+		}
+	}
+
+	deadline := time.Now().Add(time.Duration(days) * 24 * time.Hour)
+	var certs []model.Certificate
+	db.Where("expires_at IS NOT NULL AND expires_at != ? AND expires_at <= ?", time.Time{}, deadline).Order("expires_at asc").Find(&certs)
+
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": certs})
 }
 
 func handleDeleteCertificate(c *gin.Context) {
 	id := c.Param("id")
 	db.Delete(&model.Certificate{}, id)
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+func fillCertMeta(cert *model.Certificate) {
+	parsed := parseCert(cert.CertContent)
+	if parsed == nil && cert.CertFile != "" {
+		if b, err := os.ReadFile(cert.CertFile); err == nil {
+			parsed = parseCert(string(b))
+		}
+	}
+	if parsed != nil {
+		cert.ExpiresAt = parsed.NotAfter
+		cert.Issuer = parsed.Issuer.CommonName
+	}
+}
+
+func parseCert(pemText string) *x509.Certificate {
+	if strings.TrimSpace(pemText) == "" {
+		return nil
+	}
+	block, _ := pem.Decode([]byte(pemText))
+	if block == nil {
+		return nil
+	}
+	crt, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	return crt
 }
 
 // ===== 系统设置 API =====
@@ -555,6 +618,16 @@ func generateXrayConfig() error {
 		"log": map[string]interface{}{
 			"loglevel": "warning",
 		},
+		"stats": map[string]interface{}{
+			"type": "file",
+			"path": "./data/stats",
+		},
+		"policy": map[string]interface{}{
+			"system": map[string]interface{}{
+				"statsInboundUplink":   true,
+				"statsInboundDownlink": true,
+			},
+		},
 		"inbounds": inboundConfigs,
 		"outbounds": []map[string]interface{}{
 			{"protocol": "freedom", "tag": "direct"},
@@ -691,6 +764,37 @@ func handleSystemStatus(c *gin.Context) {
 			},
 			"panelUptime": int64(time.Since(startTime).Seconds()),
 			"inboundCount": len(inbounds),
+		},
+	})
+}
+
+// ===== 流量统计 API =====
+
+func handleGetTraffic(c *gin.Context) {
+	stats, err := getXrayStats()
+	if err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "获取流量统计失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": stats})
+}
+
+func handleGetTrafficByTag(c *gin.Context) {
+	tag := c.Param("tag")
+	uplink, downlink, err := getInboundTraffic(tag)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "获取流量失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"tag":      tag,
+			"uplink":   uplink,
+			"downlink": downlink,
 		},
 	})
 }

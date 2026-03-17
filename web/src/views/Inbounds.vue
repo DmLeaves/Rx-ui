@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, h } from 'vue'
+import { ref, onMounted, onUnmounted, h } from 'vue'
 import {
   NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NTooltip,
   NModal, NInput, NUpload, useMessage
@@ -11,6 +11,7 @@ import {
   CloudDownloadOutline, CloudUploadOutline, ShareSocialOutline
 } from '@vicons/ionicons5'
 import { inboundApi, type Inbound, type CreateInboundParams } from '@/api/inbound'
+import { systemApi } from '@/api/system'
 import InboundModal from '@/components/InboundModal.vue'
 import QRCodeModal from '@/components/QRCodeModal.vue'
 import { formatBytes, formatExpiry } from '@/utils/format'
@@ -31,6 +32,8 @@ const qrLink = ref('')
 // 订阅弹窗
 const showSubscriptionModal = ref(false)
 const subscriptionLink = ref('')
+
+let trafficTimer: number | null = null
 
 function getStatusType(row: Inbound): 'success' | 'error' | 'warning' {
   if (!row.enable) return 'error'
@@ -226,11 +229,27 @@ async function fetchInbounds() {
   try {
     const res = await inboundApi.list()
     inbounds.value = res.data.data || []
+    await syncTraffic()
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : '获取列表失败'
     message.error(msg)
   } finally {
     loading.value = false
+  }
+}
+
+async function syncTraffic() {
+  try {
+    const res = await systemApi.getTraffic()
+    const stats = res.data.data || []
+    const byTag = new Map(stats.map(item => [item.tag, item]))
+    inbounds.value = inbounds.value.map(i => {
+      const s = byTag.get(i.tag)
+      if (!s) return i
+      return { ...i, up: s.uplink, down: s.downlink }
+    })
+  } catch {
+    // Xray 未运行时静默
   }
 }
 
@@ -285,6 +304,11 @@ async function handleResetTraffic(id: number) {
 
 onMounted(() => {
   fetchInbounds()
+  trafficTimer = window.setInterval(syncTraffic, 5000)
+})
+
+onUnmounted(() => {
+  if (trafficTimer) clearInterval(trafficTimer)
 })
 </script>
 

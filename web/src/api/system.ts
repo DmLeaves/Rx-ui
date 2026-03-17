@@ -29,6 +29,12 @@ export interface XrayStatus {
   version: string
 }
 
+export interface TrafficStat {
+  tag: string
+  uplink: number
+  downlink: number
+}
+
 export const systemApi = {
   getStatus() {
     return request.get<ApiResponse<SystemStatus>>('/system/status')
@@ -48,5 +54,13 @@ export const systemApi = {
 
   restartXray() {
     return request.post<ApiResponse>('/xray/restart')
+  },
+
+  getTraffic() {
+    return request.get<ApiResponse<TrafficStat[]>>('/traffic')
+  },
+
+  getTrafficByTag(tag: string) {
+    return request.get<ApiResponse<TrafficStat>>(`/traffic/${tag}`)
   }
 }
