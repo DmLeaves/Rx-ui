@@ -112,6 +112,7 @@ func main() {
 			certs.GET("/expiring", handleGetExpiringCertificates)
 			certs.POST("", handleCreateCertificate)
 			certs.PUT("/:id", handleUpdateCertificate)
+			certs.POST("/:id/reload", handleReloadCertificate)
 			certs.DELETE("/:id", handleDeleteCertificate)
 		}
 
@@ -422,6 +423,18 @@ func handleGetExpiringCertificates(c *gin.Context) {
 	db.Where("expires_at IS NOT NULL AND expires_at != ? AND expires_at <= ?", time.Time{}, deadline).Order("expires_at asc").Find(&certs)
 
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": certs})
+}
+
+func handleReloadCertificate(c *gin.Context) {
+	id := c.Param("id")
+	var cert model.Certificate
+	if err := db.First(&cert, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "证书不存在"})
+		return
+	}
+	fillCertMeta(&cert)
+	db.Save(&cert)
+	c.JSON(200, gin.H{"code": 0, "message": "证书信息已刷新", "data": cert})
 }
 
 func handleDeleteCertificate(c *gin.Context) {

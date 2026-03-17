@@ -47,6 +47,10 @@ export const certificateApi = {
     return request.delete<ApiResponse>(`/certificates/${id}`)
   },
 
+  reload(id: number) {
+    return request.post<ApiResponse<Certificate>>(`/certificates/${id}/reload`)
+  },
+
   getExpiring(days: number = 30) {
     return request.get<ApiResponse<Certificate[]>>(`/certificates/expiring?days=${days}`)
   }

@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted, h } from 'vue'
+import { ref, onMounted, computed, h } from 'vue'
 import { NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NModal, NForm, NFormItem, NInput, NSwitch, NAlert, useMessage, NTabs, NTabPane } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { AddOutline, RefreshOutline, TrashOutline, CreateOutline, WarningOutline } from '@vicons/ionicons5'
+import { AddOutline, RefreshOutline, TrashOutline, CreateOutline, WarningOutline, SyncOutline } from '@vicons/ionicons5'
 import { certificateApi, type Certificate, type CreateCertificateParams } from '@/api/certificate'
 
 const message = useMessage()
 const loading = ref(false)
 const certificates = ref<Certificate[]>([])
 const expiringCerts = ref<Certificate[]>([])
+const onlyExpiring = ref(false)
 
 // 弹窗
 const showModal = ref(false)
@@ -50,6 +51,12 @@ function getExpiryText(dateStr: string): string {
   return formatDate(dateStr)
 }
 
+const displayCertificates = computed(() => {
+  if (!onlyExpiring.value) return certificates.value
+  const ids = new Set(expiringCerts.value.map(c => c.id))
+  return certificates.value.filter(c => ids.has(c.id))
+})
+
 const columns: DataTableColumns<Certificate> = [
   { title: 'ID', key: 'id', width: 60 },
   { title: '域名', key: 'domain', ellipsis: { tooltip: true } },
@@ -69,10 +76,11 @@ const columns: DataTableColumns<Certificate> = [
   {
     title: '操作',
     key: 'actions',
-    width: 120,
+    width: 160,
     render: (row) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NButton, { size: 'small', quaternary: true, onClick: () => handleEdit(row) }, { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }),
+        h(NButton, { size: 'small', quaternary: true, onClick: () => handleReload(row.id) }, { icon: () => h(NIcon, null, { default: () => h(SyncOutline) }) }),
         h(NPopconfirm, { onPositiveClick: () => handleDelete(row.id) }, {
           trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
           default: () => '确定删除该证书?'
@@ -154,6 +162,17 @@ async function handleSubmit() {
   }
 }
 
+async function handleReload(id: number) {
+  try {
+    await certificateApi.reload(id)
+    message.success('证书信息已刷新')
+    fetchCertificates()
+    fetchExpiring()
+  } catch (error: any) {
+    message.error(error.message || '刷新失败')
+  }
+}
+
 async function handleDelete(id: number) {
   try {
     await certificateApi.delete(id)
@@ -179,6 +198,9 @@ onMounted(() => {
           <template #icon><n-icon :component="RefreshOutline" /></template>
           刷新
         </n-button>
+        <n-button @click="onlyExpiring = !onlyExpiring">
+          {{ onlyExpiring ? '显示全部' : '仅看30天内过期' }}
+        </n-button>
         <n-button type="primary" @click="handleAdd">
           <template #icon><n-icon :component="AddOutline" /></template>
           添加证书
@@ -197,7 +219,7 @@ onMounted(() => {
 
     <n-data-table
       :columns="columns"
-      :data="certificates"
+      :data="displayCertificates"
       :loading="loading"
       :bordered="false"
       :row-key="(row: Certificate) => row.id"
