@@ -51,7 +51,7 @@ func main() {
 	}
 
 	// 自动迁移
-	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{})
+	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{})
 
 	// 创建默认用户（如果不存在）
 	var count int64
@@ -120,6 +120,16 @@ func main() {
 		api.GET("/settings", handleGetSettings)
 		api.PUT("/settings", handleUpdateSettings)
 
+		// 防火墙管理 API
+		firewall := api.Group("/firewall")
+		{
+			firewall.GET("/rules", handleListFirewallRules)
+			firewall.POST("/rules", handleCreateFirewallRule)
+			firewall.PUT("/rules/:id", handleUpdateFirewallRule)
+			firewall.DELETE("/rules/:id", handleDeleteFirewallRule)
+			firewall.POST("/reconcile", handleReconcileFirewall)
+		}
+
 		// Xray 控制 API
 		xray := api.Group("/xray")
 		{
@@ -147,6 +157,7 @@ func main() {
 
 	// 启动流量同步任务
 	startTrafficSyncJob()
+	go reconcileFirewall()
 
 	// 启动服务器
 	port := "54321"
@@ -235,6 +246,7 @@ func handleCreateInbound(c *gin.Context) {
 		inbound.Tag = fmt.Sprintf("inbound-%d", inbound.Port)
 	}
 	db.Create(&inbound)
+	go reconcileFirewall()
 	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": inbound})
 }
 
@@ -250,6 +262,7 @@ func handleUpdateInbound(c *gin.Context) {
 		return
 	}
 	db.Save(&inbound)
+	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": inbound})
 }
 
@@ -258,6 +271,7 @@ func handleDeleteInbound(c *gin.Context) {
 	// 删除关联的客户端
 	db.Where("inbound_id = ?", id).Delete(&model.Client{})
 	db.Delete(&model.Inbound{}, id)
+	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 
@@ -503,7 +517,85 @@ func handleUpdateSettings(c *gin.Context) {
 	for k, v := range newSettings {
 		settings[k] = v
 	}
+	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "设置已更新"})
+}
+
+// ===== 防火墙管理 API =====
+
+func handleListFirewallRules(c *gin.Context) {
+	var rules []model.FirewallRule
+	db.Order("id desc").Find(&rules)
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": rules})
+}
+
+func handleCreateFirewallRule(c *gin.Context) {
+	var req model.FirewallRule
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	req.Scope = model.FirewallScopeCustom
+	if req.Protocol == "" {
+		req.Protocol = "tcp"
+	}
+	if req.Source == "" {
+		req.Source = "any"
+	}
+	if req.Action == "" {
+		req.Action = "allow"
+	}
+	req.Status = model.FirewallStatusPending
+	db.Create(&req)
+	applied, removed, err := reconcileFirewall()
+	if err != nil {
+		c.JSON(200, gin.H{"code": 0, "message": "已创建，防火墙同步存在告警", "data": gin.H{"rule": req, "applied": applied, "removed": removed, "error": err.Error()}})
+		return
+	}
+	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": req})
+}
+
+func handleUpdateFirewallRule(c *gin.Context) {
+	id := c.Param("id")
+	var existing model.FirewallRule
+	if err := db.First(&existing, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "规则不存在"})
+		return
+	}
+	var req model.FirewallRule
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	existing.Port = req.Port
+	existing.Protocol = req.Protocol
+	existing.Source = req.Source
+	existing.Action = req.Action
+	existing.Status = model.FirewallStatusPending
+	db.Save(&existing)
+	reconcileFirewall()
+	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": existing})
+}
+
+func handleDeleteFirewallRule(c *gin.Context) {
+	id := c.Param("id")
+	var existing model.FirewallRule
+	if err := db.First(&existing, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "规则不存在"})
+		return
+	}
+	db.Delete(&existing)
+	reconcileFirewall()
+	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+func handleReconcileFirewall(c *gin.Context) {
+	applied, removed, err := reconcileFirewall()
+	if err != nil {
+		c.JSON(200, gin.H{"code": 0, "message": "同步完成（有告警）", "data": gin.H{"applied": applied, "removed": removed, "error": err.Error(), "provider": detectFirewallProvider()}})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "同步完成", "data": gin.H{"applied": applied, "removed": removed, "provider": detectFirewallProvider()}})
 }
 
 // ===== Xray 控制 API =====
