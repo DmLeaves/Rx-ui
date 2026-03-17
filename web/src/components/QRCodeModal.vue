@@ -29,9 +29,13 @@ async function generateQR() {
   }
 }
 
-function copyLink() {
-  navigator.clipboard.writeText(props.link)
-  message.success('已复制到剪贴板')
+async function copyLink() {
+  try {
+    await navigator.clipboard.writeText(props.link)
+    message.success('已复制到剪贴板')
+  } catch {
+    message.error('复制失败，请手动复制')
+  }
 }
 
 function handleClose() {

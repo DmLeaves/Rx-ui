@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NButton, NSpace, NDatePicker, NTooltip, NIcon, NCard, NGrid, NGridItem } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NButton, NSpace, NDatePicker, NTooltip, NIcon, NCard, NGrid, NGridItem, useMessage } from 'naive-ui'
 import { HelpCircleOutline } from '@vicons/ionicons5'
 import type { CreateInboundParams } from '@/api/inbound'
 import { v4 as uuidv4 } from 'uuid'
@@ -9,6 +9,8 @@ const props = defineProps<{
   show: boolean
   editData?: any
 }>()
+
+const message = useMessage()
 
 const emit = defineEmits<{
   (e: 'update:show', value: boolean): void
@@ -270,7 +272,61 @@ function buildSniffing(): string {
   return JSON.stringify(sniffingSettings.value)
 }
 
+function validateForm(): string | null {
+  if (!formData.value.port || formData.value.port < 1 || formData.value.port > 65535) {
+    return '端口必须在 1-65535 之间'
+  }
+
+  const protocol = formData.value.protocol
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+  if (protocol === 'vmess' || protocol === 'vless') {
+    if (!protocolSettings.value.uuid || !uuidRegex.test(protocolSettings.value.uuid.trim())) {
+      return 'UUID 格式不正确'
+    }
+  }
+
+  if (protocol === 'trojan' && !protocolSettings.value.trojanPassword?.trim()) {
+    return 'Trojan 密码不能为空'
+  }
+
+  if (protocol === 'shadowsocks') {
+    if (!protocolSettings.value.method) return 'Shadowsocks 加密方式不能为空'
+    if (!protocolSettings.value.password?.trim()) return 'Shadowsocks 密码不能为空'
+  }
+
+  if (protocol === 'dokodemo-door' && !protocolSettings.value.address?.trim()) {
+    return 'Dokodemo-door 目标地址不能为空'
+  }
+
+  if ((protocol === 'socks' || protocol === 'http') && protocolSettings.value.auth === 'password') {
+    if (!protocolSettings.value.user?.trim() || !protocolSettings.value.pass?.trim()) {
+      return '账号认证模式下，用户名和密码不能为空'
+    }
+  }
+
+  if (canEnableStream.value) {
+    if (streamSettings.value.network === 'ws' && !streamSettings.value.wsPath?.trim()) {
+      return 'WS 模式下 Path 不能为空'
+    }
+    if (streamSettings.value.network === 'grpc' && !streamSettings.value.grpcServiceName?.trim()) {
+      return 'gRPC 模式下 ServiceName 不能为空'
+    }
+    if (streamSettings.value.security === 'tls' && !streamSettings.value.serverName?.trim()) {
+      return 'TLS 模式下 SNI/ServerName 不能为空'
+    }
+  }
+
+  return null
+}
+
 function handleSubmit() {
+  const err = validateForm()
+  if (err) {
+    message.error(err)
+    return
+  }
+
   const data: CreateInboundParams = {
     ...formData.value,
     settings: buildSettings(),

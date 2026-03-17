@@ -264,6 +264,13 @@ function handleEdit(row: Inbound) {
 }
 
 async function handleSubmit(data: CreateInboundParams) {
+  // 前置端口冲突校验
+  const conflict = inbounds.value.find(i => i.port === data.port && (!editingInbound.value || i.id !== editingInbound.value.id))
+  if (conflict) {
+    message.error(`端口 ${data.port} 已被入站「${conflict.remark || conflict.id}」占用`)
+    return
+  }
+
   try {
     if (editingInbound.value) {
       await inboundApi.update(editingInbound.value.id, data)
