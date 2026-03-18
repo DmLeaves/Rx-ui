@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NButton, NSpace, NDatePicker, NTooltip, NIcon, NCard, NGrid, NGridItem, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NSwitch, NButton, NSpace, NDatePicker, NTooltip, NIcon, NCard, NGrid, NGridItem, NAlert, useMessage } from 'naive-ui'
 import { HelpCircleOutline } from '@vicons/ionicons5'
 import type { CreateInboundParams } from '@/api/inbound'
+import { certificateApi, type Certificate } from '@/api/certificate'
 import { v4 as uuidv4 } from 'uuid'
 
 const props = defineProps<{
@@ -91,6 +92,11 @@ const sniffingSettings = ref({
   destOverride: ['http', 'tls']
 })
 
+const certificates = ref<Certificate[]>([])
+const selectedCertificateId = ref<number | null>(null)
+const tlsCertificateFile = ref('')
+const tlsKeyFile = ref('')
+
 const protocolOptions = [
   { label: 'vmess', value: 'vmess' },
   { label: 'vless', value: 'vless' },
@@ -132,6 +138,11 @@ const flowOptions = [
   { label: 'xtls-rprx-direct', value: 'xtls-rprx-direct' }
 ]
 
+const certificateOptions = computed(() => certificates.value.map(c => ({
+  label: `${c.domain || '未命名'}${c.remark ? ` (${c.remark})` : ''}`,
+  value: c.id
+})))
+
 // 是否可以设置传输
 const canEnableStream = computed(() => 
   ['vmess', 'vless', 'shadowsocks'].includes(formData.value.protocol)
@@ -167,6 +178,27 @@ function generateSsPassword() {
 
 function generateTrojanPassword() {
   protocolSettings.value.trojanPassword = generatePassword()
+}
+
+async function loadCertificates() {
+  try {
+    const res = await certificateApi.list()
+    certificates.value = res.data.data || []
+  } catch {
+    certificates.value = []
+  }
+}
+
+function handleCertificateChange(id: number | null) {
+  selectedCertificateId.value = id
+  const cert = certificates.value.find(c => c.id === id)
+  if (!cert) return
+  tlsCertificateFile.value = cert.certFile || ''
+  tlsKeyFile.value = cert.keyFile || ''
+}
+
+function openCertificateManager() {
+  window.open('#/certificates', '_blank')
 }
 
 function buildSettings(): string {
@@ -260,8 +292,17 @@ function buildStreamSettings(): string {
   }
 
   if (ss.security === 'tls') {
+    const certificates: any[] = []
+    if (tlsCertificateFile.value.trim() && tlsKeyFile.value.trim()) {
+      certificates.push({
+        certificateFile: tlsCertificateFile.value.trim(),
+        keyFile: tlsKeyFile.value.trim()
+      })
+    }
+
     result.tlsSettings = {
-      serverName: ss.serverName
+      serverName: ss.serverName,
+      ...(certificates.length ? { certificates } : {})
     }
   }
 
@@ -315,6 +356,12 @@ function validateForm(): string | null {
     if (streamSettings.value.security === 'tls' && !streamSettings.value.serverName?.trim()) {
       return 'TLS 模式下 SNI/ServerName 不能为空'
     }
+    if (streamSettings.value.security === 'tls') {
+      const hasCertPair = !!tlsCertificateFile.value.trim() && !!tlsKeyFile.value.trim()
+      if (!hasCertPair) {
+        return 'TLS 模式下请先选择证书，或手动填写证书/私钥文件路径'
+      }
+    }
   }
 
   return null
@@ -342,8 +389,12 @@ function handleClose() {
 }
 
 // 监听显示状态，重置表单
-watch(() => props.show, (show) => {
-  if (show && !props.editData) {
+watch(() => props.show, async (show) => {
+  if (!show) return
+
+  await loadCertificates()
+
+  if (!props.editData) {
     formData.value = {
       remark: '',
       enable: true,
@@ -360,6 +411,9 @@ watch(() => props.show, (show) => {
     protocolSettings.value.uuid = uuidv4()
     protocolSettings.value.password = generatePassword()
     protocolSettings.value.trojanPassword = generatePassword()
+    selectedCertificateId.value = null
+    tlsCertificateFile.value = ''
+    tlsKeyFile.value = ''
   }
 })
 </script>
@@ -587,9 +641,32 @@ watch(() => props.show, (show) => {
 
       <!-- TLS 设置 -->
       <n-card v-if="canEnableTls && streamSettings.security === 'tls'" title="TLS 设置" size="small" style="margin-bottom: 16px;">
-        <n-form :label-width="100" label-placement="left">
+        <n-form :label-width="110" label-placement="left">
           <n-form-item label="服务器名称">
-            <n-input v-model:value="streamSettings.serverName" placeholder="SNI，留空自动使用域名" />
+            <n-input v-model:value="streamSettings.serverName" placeholder="SNI，建议填写域名" />
+          </n-form-item>
+
+          <n-alert v-if="certificates.length === 0" type="warning" style="margin-bottom: 12px;">
+            当前未发现可用证书，请先到“证书管理”添加证书，或手动填写证书/私钥文件路径。
+            <n-button text type="primary" style="margin-left: 8px;" @click="openCertificateManager">去证书管理</n-button>
+          </n-alert>
+
+          <n-form-item label="选择证书">
+            <n-select
+              :value="selectedCertificateId"
+              :options="certificateOptions"
+              clearable
+              placeholder="从证书管理中选择"
+              @update:value="handleCertificateChange"
+            />
+          </n-form-item>
+
+          <n-form-item label="证书文件">
+            <n-input v-model:value="tlsCertificateFile" placeholder="如: /etc/ssl/certs/fullchain.pem" />
+          </n-form-item>
+
+          <n-form-item label="私钥文件">
+            <n-input v-model:value="tlsKeyFile" placeholder="如: /etc/ssl/private/privkey.pem" />
           </n-form-item>
         </n-form>
       </n-card>
