@@ -199,15 +199,26 @@ function parseStreamSettings(streamSettingsStr: string) {
   }
 }
 
+function resolveEndpointHost(stream: ReturnType<typeof parseStreamSettings>, fallbackHost: string): string {
+  // 对于 WS+TLS 场景，优先使用业务域名（Host / SNI）作为节点地址，更符合实际接入方式
+  const wsHost = (stream.wsHost || '').trim()
+  const sni = (stream.sni || '').trim()
+
+  if (stream.network === 'ws' && wsHost) return wsHost
+  if ((stream.security === 'tls' || stream.security === 'xtls') && sni) return sni
+  return fallbackHost
+}
+
 /**
  * 根据入站规则生成链接
  */
 export function generateInboundLink(inbound: Inbound, host?: string): string {
-  const targetHost = host || window.location.hostname
+  const fallbackHost = host || window.location.hostname
 
   try {
     const settings = JSON.parse(inbound.settings || '{}')
     const stream = parseStreamSettings(inbound.streamSettings)
+    const targetHost = resolveEndpointHost(stream, fallbackHost)
 
     switch (inbound.protocol) {
       case 'vmess': {
@@ -291,8 +302,9 @@ export function generateClientLink(
   inbound: Inbound,
   host?: string
 ): string {
-  const targetHost = host || window.location.hostname
+  const fallbackHost = host || window.location.hostname
   const stream = parseStreamSettings(inbound.streamSettings)
+  const targetHost = resolveEndpointHost(stream, fallbackHost)
   const remark = client.remark || inbound.remark || `${inbound.port}`
 
   try {
