@@ -356,13 +356,92 @@ func handleGetClients(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": clients})
 }
 
+func syncInboundClientsToSettings(inboundID int) error {
+	var inbound model.Inbound
+	if err := db.First(&inbound, inboundID).Error; err != nil {
+		return err
+	}
+
+	var settings map[string]interface{}
+	if strings.TrimSpace(inbound.Settings) != "" {
+		_ = json.Unmarshal([]byte(inbound.Settings), &settings)
+	}
+	if settings == nil {
+		settings = map[string]interface{}{}
+	}
+
+	var clients []model.Client
+	db.Where("inbound_id = ? AND enable = ?", inboundID, true).Order("id asc").Find(&clients)
+
+	switch inbound.Protocol {
+	case model.ProtocolVMess:
+		arr := make([]map[string]interface{}, 0)
+		for _, c := range clients {
+			if strings.TrimSpace(c.UUID) == "" {
+				continue
+			}
+			arr = append(arr, map[string]interface{}{"id": c.UUID, "alterId": 0})
+		}
+		settings["clients"] = arr
+	case model.ProtocolVLESS:
+		arr := make([]map[string]interface{}, 0)
+		for _, c := range clients {
+			if strings.TrimSpace(c.UUID) == "" {
+				continue
+			}
+			arr = append(arr, map[string]interface{}{"id": c.UUID, "flow": c.Flow})
+		}
+		settings["clients"] = arr
+		if _, ok := settings["decryption"]; !ok {
+			settings["decryption"] = "none"
+		}
+	case model.ProtocolTrojan:
+		arr := make([]map[string]interface{}, 0)
+		for _, c := range clients {
+			if strings.TrimSpace(c.Password) == "" {
+				continue
+			}
+			arr = append(arr, map[string]interface{}{"password": c.Password})
+		}
+		settings["clients"] = arr
+	case model.ProtocolShadowsocks:
+		for _, c := range clients {
+			if strings.TrimSpace(c.Password) != "" {
+				settings["password"] = c.Password
+				break
+			}
+		}
+	}
+
+	b, _ := json.Marshal(settings)
+	inbound.Settings = string(b)
+	if err := db.Save(&inbound).Error; err != nil {
+		return err
+	}
+
+	if xrayRunning {
+		_ = stopXray()
+		time.Sleep(300 * time.Millisecond)
+		_ = startXray()
+	}
+	return nil
+}
+
 func handleCreateClient(c *gin.Context) {
 	var client model.Client
 	if err := c.ShouldBindJSON(&client); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
-	db.Create(&client)
+	if client.InboundID == 0 {
+		c.JSON(400, gin.H{"code": 1, "message": "inboundId 不能为空"})
+		return
+	}
+	if err := db.Create(&client).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "创建失败"})
+		return
+	}
+	_ = syncInboundClientsToSettings(client.InboundID)
 	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": client})
 }
 
@@ -373,17 +452,32 @@ func handleUpdateClient(c *gin.Context) {
 		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
 		return
 	}
+	inboundID := client.InboundID
 	if err := c.ShouldBindJSON(&client); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
-	db.Save(&client)
+	client.InboundID = inboundID
+	if err := db.Save(&client).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "更新失败"})
+		return
+	}
+	_ = syncInboundClientsToSettings(client.InboundID)
 	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": client})
 }
 
 func handleDeleteClient(c *gin.Context) {
 	id := c.Param("id")
-	db.Delete(&model.Client{}, id)
+	var client model.Client
+	if err := db.First(&client, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		return
+	}
+	if err := db.Delete(&model.Client{}, id).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "删除失败"})
+		return
+	}
+	_ = syncInboundClientsToSettings(client.InboundID)
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 

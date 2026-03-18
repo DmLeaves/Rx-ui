@@ -33,6 +33,8 @@ export const userApi = {
   },
 
   updatePassword(id: number, params: UpdatePasswordParams) {
-    return request.put<ApiResponse>(`/users/${id}/password`, params)
+    return request.put<ApiResponse>(`/users/${id}/password`, {
+      newPassword: params.password
+    })
   }
 }

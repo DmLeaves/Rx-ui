@@ -45,19 +45,24 @@ func getXrayStats() ([]TrafficStats, error) {
 			return nil
 		}
 
-		// 解析文件名格式：inbound_tag_uplink 或 inbound_tag_downlink
+		// 解析文件名，兼容 tag 含下划线的情况：inbound_<tag>_uplink/downlink
 		filename := info.Name()
-		parts := strings.Split(filename, "_")
-		if len(parts) < 3 {
+		if !strings.HasPrefix(filename, "inbound_") {
+			return nil
+		}
+		if !(strings.HasSuffix(filename, "_uplink") || strings.HasSuffix(filename, "_downlink")) {
 			return nil
 		}
 
-		if parts[0] != "inbound" {
+		direction := "uplink"
+		if strings.HasSuffix(filename, "_downlink") {
+			direction = "downlink"
+		}
+		middle := strings.TrimPrefix(filename, "inbound_")
+		tag := strings.TrimSuffix(strings.TrimSuffix(middle, "_uplink"), "_downlink")
+		if tag == "" {
 			return nil
 		}
-
-		tag := parts[1]
-		direction := parts[2]
 
 		// 读取文件内容（包含流量值）
 		content, err := os.ReadFile(path)

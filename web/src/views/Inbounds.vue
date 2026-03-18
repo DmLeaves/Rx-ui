@@ -78,8 +78,9 @@ async function copyLink(row: Inbound) {
       document.body.appendChild(textarea)
       textarea.focus()
       textarea.select()
-      document.execCommand('copy')
+      const ok = document.execCommand('copy')
       document.body.removeChild(textarea)
+      if (!ok) throw new Error('execCommand copy failed')
     }
     message.success('链接已复制')
   } catch {
@@ -113,8 +114,9 @@ async function copySubscription() {
       document.body.appendChild(textarea)
       textarea.focus()
       textarea.select()
-      document.execCommand('copy')
+      const ok = document.execCommand('copy')
       document.body.removeChild(textarea)
+      if (!ok) throw new Error('execCommand copy failed')
     }
     message.success('订阅内容已复制')
   } catch {

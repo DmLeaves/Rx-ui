@@ -44,8 +44,9 @@ async function copyLink() {
       document.body.appendChild(textarea)
       textarea.focus()
       textarea.select()
-      document.execCommand('copy')
+      const ok = document.execCommand('copy')
       document.body.removeChild(textarea)
+      if (!ok) throw new Error('execCommand copy failed')
     }
     message.success('已复制到剪贴板')
   } catch {
