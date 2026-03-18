@@ -30,15 +30,20 @@
 ### 方式一：直接运行
 
 ```bash
-# 下载
+# 下载（latest）
 wget https://github.com/DmLeaves/Rx-ui/releases/latest/download/rx-ui-linux-amd64.tar.gz
 
 # 解压
 tar -xzf rx-ui-linux-amd64.tar.gz
-cd rx-ui
 
 # 运行（首次运行会自动下载 Xray）
-./rx-ui
+./rx-ui-linux-amd64
+```
+
+### 一行安装（Linux amd64）
+
+```bash
+wget -O rx-ui-linux-amd64.tar.gz https://github.com/DmLeaves/Rx-ui/releases/latest/download/rx-ui-linux-amd64.tar.gz && tar -xzf rx-ui-linux-amd64.tar.gz && chmod +x rx-ui-linux-amd64 && ./rx-ui-linux-amd64
 ```
 
 ### 方式二：从源码构建
