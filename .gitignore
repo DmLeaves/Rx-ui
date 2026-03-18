@@ -25,6 +25,8 @@ Thumbs.db
 # Build
 bin/xray-*
 dist/
+!internal/web/dist/
+!internal/web/dist/**
 
 # Logs
 *.log

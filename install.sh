@@ -73,8 +73,11 @@ fi
 
 echo "$INSTALL_VERSION" > "${APP_DIR}/VERSION"
 
-wget -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/main/rx-ui.service"
-wget -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/main/Rx-ui.sh"
+SCRIPT_REF="$INSTALL_VERSION"
+[[ "$SCRIPT_REF" == "latest" ]] && SCRIPT_REF="main"
+
+wget -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/rx-ui.service"
+wget -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/Rx-ui.sh"
 chmod +x /usr/bin/Rx-ui
 ln -sf /usr/bin/Rx-ui /usr/bin/rx-ui
 
