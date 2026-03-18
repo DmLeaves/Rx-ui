@@ -20,6 +20,10 @@ check_install() {
   return 0
 }
 
+run_app() {
+  (cd "$APP_DIR" && "$APP_BIN" "$@")
+}
+
 start_panel(){ systemctl start "$SERVICE_NAME"; logi "已启动"; }
 stop_panel(){ systemctl stop "$SERVICE_NAME"; logi "已停止"; }
 restart_panel(){ systemctl restart "$SERVICE_NAME"; logi "已重启"; }
@@ -32,7 +36,11 @@ disable_panel(){ systemctl disable "$SERVICE_NAME"; }
 set_port(){
   read -rp "输入新端口 [1-65535]: " port
   [[ -z "$port" ]] && return
-  "$APP_BIN" setting -port "$port"
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+    loge "端口必须在 1-65535"
+    return
+  fi
+  run_app setting -port "$port"
   logi "端口已更新，建议重启服务"
 }
 
@@ -41,11 +49,11 @@ reset_admin(){
   read -rp "新密码 [默认 admin123]: " pass
   user=${user:-admin}
   pass=${pass:-admin123}
-  "$APP_BIN" setting -username "$user" -password "$pass"
+  run_app setting -username "$user" -password "$pass"
   logi "管理员账号已更新"
 }
 
-show_setting(){ "$APP_BIN" setting -show; }
+show_setting(){ run_app setting -show; }
 
 update_panel(){
   read -rp "确认升级到最新版本? [y/N]: " c

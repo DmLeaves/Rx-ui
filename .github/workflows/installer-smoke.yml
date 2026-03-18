@@ -34,3 +34,10 @@ jobs:
           test -x /usr/bin/Rx-ui
           test -f /etc/systemd/system/rx-ui.service
           /usr/local/rx-ui/rx-ui setting -show
+
+      - name: Verify global menu script works from any cwd
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          /usr/bin/Rx-ui setting | grep -E '^webPort:'
