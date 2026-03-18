@@ -19,11 +19,59 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run installer in CI mode
+      - name: Resolve test tag
+        id: resolve
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ github.event.release.tag_name || github.event.inputs.tag || 'latest' }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Using tag: $TAG"
+
+      - name: Wait for release asset to become downloadable
+        if: ${{ steps.resolve.outputs.tag != 'latest' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.resolve.outputs.tag }}"
+          URL="https://github.com/${REPO}/releases/download/${TAG}/rx-ui-linux-amd64.tar.gz"
+          ASSET="rx-ui-linux-amd64.tar.gz"
+
+          echo "Waiting for $ASSET in $REPO@$TAG"
+          for i in $(seq 1 30); do
+            API_OK=0
+            HTTP_OK=0
+
+            ASSET_ID=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+              | jq -r --arg name "$ASSET" '.assets[]? | select(.name==$name) | .id' \
+              | head -n1 || true)
+
+            if [[ -n "${ASSET_ID:-}" && "$ASSET_ID" != "null" ]]; then
+              API_OK=1
+            fi
+
+            if curl -fsSI "$URL" >/dev/null; then
+              HTTP_OK=1
+            fi
+
+            if [[ "$API_OK" -eq 1 && "$HTTP_OK" -eq 1 ]]; then
+              echo "Asset is ready (id=$ASSET_ID)"
+              exit 0
+            fi
+
+            echo "[$i/30] asset not ready yet, retry in 10s..."
+            sleep 10
+          done
+
+          echo "Timed out waiting for asset: $URL"
+          exit 1
+
+      - name: Run installer in CI mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
           sudo env RX_UI_TAG="$TAG" RX_UI_SKIP_SYSTEMD=1 bash ./install.sh
 
       - name: Verify installed files
