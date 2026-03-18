@@ -157,13 +157,21 @@ async function handleSubmit() {
   }
 
   try {
+    let saved: Certificate | null = null
     if (editingCert.value) {
-      await certificateApi.update(editingCert.value.id, certForm.value)
+      const res = await certificateApi.update(editingCert.value.id, certForm.value)
+      saved = res.data.data || null
       message.success('更新成功')
     } else {
-      await certificateApi.create(certForm.value)
+      const res = await certificateApi.create(certForm.value)
+      saved = res.data.data || null
       message.success('添加成功')
     }
+
+    if (saved?.certFile && saved?.keyFile) {
+      message.info(`证书已落盘: ${saved.certFile}`)
+    }
+
     showModal.value = false
     fetchCertificates()
     fetchExpiring()
@@ -286,6 +294,12 @@ onMounted(() => {
                 :rows="6"
                 placeholder="粘贴私钥内容 (-----BEGIN PRIVATE KEY-----...)"
               />
+            </n-form-item>
+            <n-form-item label="证书路径">
+              <n-input :value="certForm.certFile || ''" readonly placeholder="保存后自动生成（如 data/certs/*.crt）" />
+            </n-form-item>
+            <n-form-item label="私钥路径">
+              <n-input :value="certForm.keyFile || ''" readonly placeholder="保存后自动生成（如 data/certs/*.key）" />
             </n-form-item>
             <n-form-item label="备注">
               <n-input v-model:value="certForm.remark" placeholder="可选" />
