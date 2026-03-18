@@ -1,16 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"path/filepath"
+	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-)
 
-import (
 	"rxui/internal/model"
 )
 
@@ -20,88 +17,74 @@ type TrafficStats struct {
 	Downlink int64  `json:"downlink"`
 }
 
-// getXrayStats 获取 Xray 流量统计（通过文件系统）
+var statLineRe = regexp.MustCompile(`name:\s*"([^"]+)"\s+value:\s*([0-9]+)`) // xray api statsquery output
+
+func queryXrayStats(pattern string) (string, error) {
+	xrayBin := getXrayBinPath()
+	cmd := exec.Command(xrayBin, "api", "statsquery", "--server=127.0.0.1:10085", "-pattern", pattern)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("xray api statsquery failed: %v, output: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+func parseStatOutput(output string) map[string]int64 {
+	result := map[string]int64{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		m := statLineRe.FindStringSubmatch(line)
+		if len(m) != 3 {
+			continue
+		}
+		v, _ := strconv.ParseInt(m[2], 10, 64)
+		result[m[1]] = v
+	}
+	return result
+}
+
+// getXrayStats 获取 Xray 入站流量统计（通过 Xray API）
 func getXrayStats() ([]TrafficStats, error) {
 	if !xrayRunning {
-		return nil, fmt.Errorf("Xray 未运行")
-	}
-
-	// Xray 将统计信息写入文件
-	statsDir := "./data/stats"
-	if _, err := os.Stat(statsDir); os.IsNotExist(err) {
-		// 如果目录不存在，返回空
 		return []TrafficStats{}, nil
 	}
 
-	statsMap := make(map[string]*TrafficStats)
+	out, err := queryXrayStats("inbound>>>")
+	if err != nil {
+		return nil, err
+	}
+	values := parseStatOutput(out)
+	statsMap := map[string]*TrafficStats{}
 
-	// 读取所有统计文件
-	err := filepath.Walk(statsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	for name, v := range values {
+		// inbound>>>tag>>>traffic>>>uplink/downlink
+		parts := strings.Split(name, ">>>")
+		if len(parts) < 4 || parts[0] != "inbound" {
+			continue
 		}
-
-		if info.IsDir() {
-			return nil
+		tag := parts[1]
+		dir := parts[3]
+		if tag == "api" {
+			continue
 		}
-
-		// 解析文件名，兼容 tag 含下划线的情况：inbound_<tag>_uplink/downlink
-		filename := info.Name()
-		if !strings.HasPrefix(filename, "inbound_") {
-			return nil
-		}
-		if !(strings.HasSuffix(filename, "_uplink") || strings.HasSuffix(filename, "_downlink")) {
-			return nil
-		}
-
-		direction := "uplink"
-		if strings.HasSuffix(filename, "_downlink") {
-			direction = "downlink"
-		}
-		middle := strings.TrimPrefix(filename, "inbound_")
-		tag := strings.TrimSuffix(strings.TrimSuffix(middle, "_uplink"), "_downlink")
-		if tag == "" {
-			return nil
-		}
-
-		// 读取文件内容（包含流量值）
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-
-		value, err := strconv.ParseInt(strings.TrimSpace(string(content)), 10, 64)
-		if err != nil {
-			return nil
-		}
-
 		if _, ok := statsMap[tag]; !ok {
 			statsMap[tag] = &TrafficStats{Tag: tag}
 		}
-
-		if direction == "uplink" {
-			statsMap[tag].Uplink = value
-		} else if direction == "downlink" {
-			statsMap[tag].Downlink = value
+		if dir == "uplink" {
+			statsMap[tag].Uplink = v
+		} else if dir == "downlink" {
+			statsMap[tag].Downlink = v
 		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("读取统计文件失败: %v", err)
 	}
 
-	// 转换为切片
-	result := make([]TrafficStats, 0, len(statsMap))
+	res := make([]TrafficStats, 0, len(statsMap))
 	for _, s := range statsMap {
-		// 跳过 api 入站
-		if s.Tag != "api" {
-			result = append(result, *s)
-		}
+		res = append(res, *s)
 	}
-
-	return result, nil
+	return res, nil
 }
 
 // getInboundTraffic 获取单个入站的流量
@@ -110,73 +93,64 @@ func getInboundTraffic(tag string) (uplink, downlink int64, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-
 	for _, s := range stats {
 		if s.Tag == tag {
 			return s.Uplink, s.Downlink, nil
 		}
 	}
-
 	return 0, 0, nil
 }
 
-// syncTrafficToDatabase 同步流量到数据库
+// syncTrafficToDatabase 同步流量到数据库（写入绝对值）
 func syncTrafficToDatabase() error {
 	stats, err := getXrayStats()
 	if err != nil {
 		return err
 	}
-
 	for _, s := range stats {
-		// 查找对应的入站规则
-		var inbound model.Inbound
-		if err := db.Where("tag = ?", s.Tag).First(&inbound).Error; err != nil {
-			continue
-		}
+		db.Model(&model.Inbound{}).Where("tag = ?", s.Tag).Updates(map[string]interface{}{
+			"up":   s.Uplink,
+			"down": s.Downlink,
+		})
+	}
 
-		// 更新流量
-		inbound.Up += s.Uplink
-		inbound.Down += s.Downlink
-		db.Save(&inbound)
+	// 客户端流量（需要客户端在 settings 里带 email=clt-<id>）
+	out, err := queryXrayStats("user>>>")
+	if err == nil {
+		values := parseStatOutput(out)
+		for name, v := range values {
+			// user>>>clt-123>>>traffic>>>uplink/downlink
+			parts := strings.Split(name, ">>>")
+			if len(parts) < 4 || parts[0] != "user" {
+				continue
+			}
+			email := parts[1]
+			dir := parts[3]
+			if !strings.HasPrefix(email, "clt-") {
+				continue
+			}
+			id, convErr := strconv.Atoi(strings.TrimPrefix(email, "clt-"))
+			if convErr != nil {
+				continue
+			}
+			if dir == "uplink" {
+				db.Model(&model.Client{}).Where("id = ?", id).Update("up", v)
+			} else if dir == "downlink" {
+				db.Model(&model.Client{}).Where("id = ?", id).Update("down", v)
+			}
+		}
 	}
 
 	return nil
 }
 
-// resetXrayStats 重置 Xray 流量统计（在同步后调用）
-func resetXrayStats() error {
-	// 删除统计文件
-	statsDir := "./data/stats"
-	if _, err := os.Stat(statsDir); os.IsNotExist(err) {
-		return nil
-	}
-
-	// 清空文件内容
-	err := filepath.Walk(statsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		// 清空文件内容
-		return os.WriteFile(path, []byte("0"), 0644)
-	})
-
-	return err
-}
-
 // startTrafficSyncJob 启动流量同步定时任务
 func startTrafficSyncJob() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	go func() {
 		for range ticker.C {
 			if xrayRunning {
-				if err := syncTrafficToDatabase(); err == nil {
-					resetXrayStats()
-				}
+				_ = syncTrafficToDatabase()
 			}
 		}
 	}()
@@ -203,24 +177,4 @@ func formatTraffic(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
-}
-
-// 读取流量文件（辅助函数）
-func readTrafficFile(path string) (int64, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	if scanner.Scan() {
-		value, err := strconv.ParseInt(scanner.Text(), 10, 64)
-		if err != nil {
-			return 0, err
-		}
-		return value, nil
-	}
-
-	return 0, fmt.Errorf("文件为空")
 }

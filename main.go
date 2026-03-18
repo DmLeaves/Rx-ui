@@ -380,7 +380,7 @@ func syncInboundClientsToSettings(inboundID int) error {
 			if strings.TrimSpace(c.UUID) == "" {
 				continue
 			}
-			arr = append(arr, map[string]interface{}{"id": c.UUID, "alterId": 0})
+			arr = append(arr, map[string]interface{}{"id": c.UUID, "alterId": 0, "email": fmt.Sprintf("clt-%d", c.ID)})
 		}
 		settings["clients"] = arr
 	case model.ProtocolVLESS:
@@ -389,7 +389,7 @@ func syncInboundClientsToSettings(inboundID int) error {
 			if strings.TrimSpace(c.UUID) == "" {
 				continue
 			}
-			arr = append(arr, map[string]interface{}{"id": c.UUID, "flow": c.Flow})
+			arr = append(arr, map[string]interface{}{"id": c.UUID, "flow": c.Flow, "email": fmt.Sprintf("clt-%d", c.ID)})
 		}
 		settings["clients"] = arr
 		if _, ok := settings["decryption"]; !ok {
@@ -401,7 +401,7 @@ func syncInboundClientsToSettings(inboundID int) error {
 			if strings.TrimSpace(c.Password) == "" {
 				continue
 			}
-			arr = append(arr, map[string]interface{}{"password": c.Password})
+			arr = append(arr, map[string]interface{}{"password": c.Password, "email": fmt.Sprintf("clt-%d", c.ID)})
 		}
 		settings["clients"] = arr
 	case model.ProtocolShadowsocks:
@@ -983,15 +983,33 @@ func generateXrayConfig() error {
 		}
 	}
 
+	apiInbound := map[string]interface{}{
+		"tag":      "api",
+		"listen":   "127.0.0.1",
+		"port":     10085,
+		"protocol": "dokodemo-door",
+		"settings": map[string]interface{}{
+			"address": "127.0.0.1",
+		},
+	}
+	inboundConfigs = append(inboundConfigs, apiInbound)
+
 	config := map[string]interface{}{
 		"log": map[string]interface{}{
 			"loglevel": "warning",
 		},
-		"stats": map[string]interface{}{
-			"type": "file",
-			"path": "./data/stats",
+		"api": map[string]interface{}{
+			"tag":      "api",
+			"services": []string{"StatsService"},
 		},
+		"stats": map[string]interface{}{},
 		"policy": map[string]interface{}{
+			"levels": map[string]interface{}{
+				"0": map[string]interface{}{
+					"statsUserUplink":   true,
+					"statsUserDownlink": true,
+				},
+			},
 			"system": map[string]interface{}{
 				"statsInboundUplink":   true,
 				"statsInboundDownlink": true,
@@ -1001,9 +1019,11 @@ func generateXrayConfig() error {
 		"outbounds": []map[string]interface{}{
 			{"protocol": "freedom", "tag": "direct"},
 			{"protocol": "blackhole", "tag": "blocked"},
+			{"protocol": "freedom", "tag": "api"},
 		},
 		"routing": map[string]interface{}{
 			"rules": []map[string]interface{}{
+				{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
 				{"type": "field", "outboundTag": "blocked", "ip": []string{"geoip:private"}},
 			},
 		},
