@@ -192,7 +192,11 @@ async function loadCertificates() {
 function handleCertificateChange(id: number | null) {
   selectedCertificateId.value = id
   const cert = certificates.value.find(c => c.id === id)
-  if (!cert) return
+  if (!cert) {
+    tlsCertificateFile.value = ''
+    tlsKeyFile.value = ''
+    return
+  }
   tlsCertificateFile.value = cert.certFile || ''
   tlsKeyFile.value = cert.keyFile || ''
 }
@@ -767,13 +771,19 @@ watch(() => props.show, async (show) => {
             />
           </n-form-item>
 
-          <n-form-item label="证书文件">
-            <n-input v-model:value="tlsCertificateFile" placeholder="如: /etc/ssl/certs/fullchain.pem" />
-          </n-form-item>
+          <n-alert v-if="selectedCertificateId !== null" type="success" style="margin-bottom: 12px;">
+            已使用证书管理中的路径自动配置证书与私钥。
+          </n-alert>
 
-          <n-form-item label="私钥文件">
-            <n-input v-model:value="tlsKeyFile" placeholder="如: /etc/ssl/private/privkey.pem" />
-          </n-form-item>
+          <template v-else>
+            <n-form-item label="证书文件">
+              <n-input v-model:value="tlsCertificateFile" placeholder="如: /etc/ssl/certs/fullchain.pem" />
+            </n-form-item>
+
+            <n-form-item label="私钥文件">
+              <n-input v-model:value="tlsKeyFile" placeholder="如: /etc/ssl/private/privkey.pem" />
+            </n-form-item>
+          </template>
         </n-form>
       </n-card>
 
