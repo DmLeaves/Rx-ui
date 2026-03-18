@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -34,16 +35,10 @@ var (
 	startTime   = time.Now()
 )
 
-func main() {
+func initDatabase() {
 	// 确保数据目录存在
 	os.MkdirAll("./data", 0755)
 
-	// 自动安装 Xray
-	if err := ensureXrayInstalled(); err != nil {
-		log.Printf("警告: Xray 安装失败: %v", err)
-	}
-
-	// 初始化数据库
 	var err error
 	db, err = gorm.Open(sqlite.Open("./data/rx-ui.db"), &gorm.Config{})
 	if err != nil {
@@ -51,19 +46,81 @@ func main() {
 	}
 
 	// 自动迁移
-	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{})
+	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{}, &model.Setting{})
 
 	// 创建默认用户（如果不存在）
 	var count int64
 	db.Model(&model.User{}).Count(&count)
 	if count == 0 {
-		defaultUser := &model.User{
-			Username: "admin",
-			Password: "admin123",
-			Enable:   true,
-		}
+		defaultUser := &model.User{Username: "admin", Password: "admin123", Enable: true}
 		db.Create(defaultUser)
 		log.Println("Created default user: admin / admin123")
+	}
+
+	loadSettingsFromDB()
+}
+
+func handleSettingCLI(args []string) {
+	fs := flag.NewFlagSet("setting", flag.ExitOnError)
+	show := fs.Bool("show", false, "show current settings")
+	port := fs.String("port", "", "set panel port")
+	username := fs.String("username", "", "set admin username")
+	password := fs.String("password", "", "set admin password")
+	reset := fs.Bool("reset", false, "reset panel settings to defaults")
+	_ = fs.Parse(args)
+
+	if *reset {
+		for k, v := range defaultSettings {
+			settings[k] = v
+			upsertSetting(k, v)
+		}
+		fmt.Println("面板设置已重置为默认值")
+	}
+
+	if strings.TrimSpace(*port) != "" {
+		settings["webPort"] = strings.TrimSpace(*port)
+		upsertSetting("webPort", settings["webPort"])
+		fmt.Printf("面板端口已设置为: %s\n", settings["webPort"])
+	}
+
+	if strings.TrimSpace(*username) != "" || strings.TrimSpace(*password) != "" {
+		var user model.User
+		if err := db.Order("id asc").First(&user).Error; err != nil {
+			fmt.Printf("更新账户失败: %v\n", err)
+			return
+		}
+		if strings.TrimSpace(*username) != "" {
+			user.Username = strings.TrimSpace(*username)
+		}
+		if strings.TrimSpace(*password) != "" {
+			user.Password = strings.TrimSpace(*password)
+		}
+		db.Save(&user)
+		fmt.Println("管理员账号信息已更新")
+	}
+
+	if *show || (*port == "" && *username == "" && *password == "" && !*reset) {
+		fmt.Printf("webPort: %s\n", settings["webPort"])
+		fmt.Printf("webBasePath: %s\n", settings["webBasePath"])
+		fmt.Printf("timeZone: %s\n", settings["timeZone"])
+		var user model.User
+		if err := db.Order("id asc").First(&user).Error; err == nil {
+			fmt.Printf("username: %s\n", user.Username)
+		}
+	}
+}
+
+func main() {
+	initDatabase()
+
+	if len(os.Args) > 1 && os.Args[1] == "setting" {
+		handleSettingCLI(os.Args[2:])
+		return
+	}
+
+	// 自动安装 Xray
+	if err := ensureXrayInstalled(); err != nil {
+		log.Printf("警告: Xray 安装失败: %v", err)
 	}
 
 	// 设置 Gin
@@ -487,13 +544,39 @@ func parseCert(pemText string) *x509.Certificate {
 
 // ===== 系统设置 API =====
 
-var settings = map[string]string{
+var defaultSettings = map[string]string{
 	"webPort":     "54321",
 	"webBasePath": "/",
 	"webCertFile": "",
 	"webKeyFile":  "",
 	"xrayBinPath": "", // 自动检测
 	"timeZone":    "Asia/Shanghai",
+}
+
+var settings = map[string]string{}
+
+func loadSettingsFromDB() {
+	for k, v := range defaultSettings {
+		settings[k] = v
+	}
+
+	var rows []model.Setting
+	db.Find(&rows)
+	for _, row := range rows {
+		settings[row.Key] = row.Value
+	}
+
+	for k, v := range defaultSettings {
+		if _, ok := settings[k]; !ok || settings[k] == "" {
+			settings[k] = v
+		}
+		upsertSetting(k, settings[k])
+	}
+}
+
+func upsertSetting(key, value string) {
+	var s model.Setting
+	db.Where("key = ?", key).Assign(model.Setting{Value: value}).FirstOrCreate(&s, model.Setting{Key: key})
 }
 
 // getXrayBinPath 获取 Xray 二进制路径
@@ -516,6 +599,7 @@ func handleUpdateSettings(c *gin.Context) {
 	}
 	for k, v := range newSettings {
 		settings[k] = v
+		upsertSetting(k, v)
 	}
 	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "设置已更新"})

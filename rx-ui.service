@@ -1,0 +1,15 @@
+[Unit]
+Description=Rx-ui Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/rx-ui
+ExecStart=/usr/local/rx-ui/rx-ui
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

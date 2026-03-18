@@ -46,7 +46,32 @@ tar -xzf rx-ui-linux-amd64.tar.gz
 wget -O rx-ui-linux-amd64.tar.gz https://github.com/DmLeaves/Rx-ui/releases/latest/download/rx-ui-linux-amd64.tar.gz && tar -xzf rx-ui-linux-amd64.tar.gz && chmod +x rx-ui-linux-amd64 && ./rx-ui-linux-amd64
 ```
 
-### 方式二：从源码构建
+### 方式二：Systemd 服务化部署（推荐）
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/DmLeaves/Rx-ui/main/install.sh)
+```
+
+安装后可在任意目录使用：
+
+```bash
+Rx-ui
+```
+
+常用命令：
+
+```bash
+Rx-ui start
+Rx-ui stop
+Rx-ui restart
+Rx-ui status
+Rx-ui set-port
+Rx-ui reset-admin
+Rx-ui update
+Rx-ui uninstall
+```
+
+### 方式三：从源码构建
 
 ```bash
 # 克隆
