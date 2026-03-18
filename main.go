@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -449,18 +451,76 @@ func handleGetCertificates(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": certs})
 }
 
+type certificateUpsertRequest struct {
+	Domain      string `json:"domain"`
+	CertFile    string `json:"certFile"`
+	KeyFile     string `json:"keyFile"`
+	CertContent string `json:"certContent"`
+	KeyContent  string `json:"keyContent"`
+	Remark      string `json:"remark"`
+	AutoRenew   bool   `json:"autoRenew"`
+}
+
+func sanitizeDomainForCertPath(domain string) string {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		d = "cert"
+	}
+	re := regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+	return re.ReplaceAllString(d, "_")
+}
+
+func ensureCertificateFiles(cert *model.Certificate) error {
+	if strings.TrimSpace(cert.CertFile) != "" && strings.TrimSpace(cert.KeyFile) != "" {
+		return nil
+	}
+	if strings.TrimSpace(cert.CertContent) == "" || strings.TrimSpace(cert.KeyContent) == "" {
+		return nil
+	}
+
+	certDir := filepath.Join("data", "certs")
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		return err
+	}
+	base := fmt.Sprintf("%s-%d", sanitizeDomainForCertPath(cert.Domain), time.Now().Unix())
+	certPath := filepath.Join(certDir, base+".crt")
+	keyPath := filepath.Join(certDir, base+".key")
+	if err := os.WriteFile(certPath, []byte(strings.TrimSpace(cert.CertContent)+"\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, []byte(strings.TrimSpace(cert.KeyContent)+"\n"), 0o600); err != nil {
+		return err
+	}
+	cert.CertFile = certPath
+	cert.KeyFile = keyPath
+	return nil
+}
+
 func handleCreateCertificate(c *gin.Context) {
-	var cert model.Certificate
-	if err := c.ShouldBindJSON(&cert); err != nil {
+	var req certificateUpsertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
 
-	if cert.Domain == "" {
+	if strings.TrimSpace(req.Domain) == "" {
 		c.JSON(400, gin.H{"code": 1, "message": "domain 不能为空"})
 		return
 	}
 
+	cert := model.Certificate{
+		Domain:      strings.TrimSpace(req.Domain),
+		CertFile:    strings.TrimSpace(req.CertFile),
+		KeyFile:     strings.TrimSpace(req.KeyFile),
+		CertContent: req.CertContent,
+		KeyContent:  req.KeyContent,
+		Remark:      req.Remark,
+		AutoRenew:   req.AutoRenew,
+	}
+	if err := ensureCertificateFiles(&cert); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "证书落盘失败: " + err.Error()})
+		return
+	}
 	fillCertMeta(&cert)
 	db.Create(&cert)
 	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": cert})
@@ -473,11 +533,34 @@ func handleUpdateCertificate(c *gin.Context) {
 		c.JSON(404, gin.H{"code": 1, "message": "证书不存在"})
 		return
 	}
-	if err := c.ShouldBindJSON(&cert); err != nil {
+	var req certificateUpsertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
 
+	if strings.TrimSpace(req.Domain) != "" {
+		cert.Domain = strings.TrimSpace(req.Domain)
+	}
+	if strings.TrimSpace(req.CertFile) != "" {
+		cert.CertFile = strings.TrimSpace(req.CertFile)
+	}
+	if strings.TrimSpace(req.KeyFile) != "" {
+		cert.KeyFile = strings.TrimSpace(req.KeyFile)
+	}
+	if strings.TrimSpace(req.CertContent) != "" {
+		cert.CertContent = req.CertContent
+	}
+	if strings.TrimSpace(req.KeyContent) != "" {
+		cert.KeyContent = req.KeyContent
+	}
+	cert.Remark = req.Remark
+	cert.AutoRenew = req.AutoRenew
+
+	if err := ensureCertificateFiles(&cert); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "证书落盘失败: " + err.Error()})
+		return
+	}
 	fillCertMeta(&cert)
 	db.Save(&cert)
 	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": cert})
