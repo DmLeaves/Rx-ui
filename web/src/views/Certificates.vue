@@ -14,6 +14,7 @@ const onlyExpiring = ref(false)
 // 弹窗
 const showModal = ref(false)
 const editingCert = ref<Certificate | null>(null)
+const activeTab = ref<'file' | 'content'>('file')
 const certForm = ref<CreateCertificateParams>({
   domain: '',
   certFile: '',
@@ -119,6 +120,7 @@ async function fetchExpiring() {
 
 function handleAdd() {
   editingCert.value = null
+  activeTab.value = 'file'
   certForm.value = {
     domain: '',
     certFile: '',
@@ -133,6 +135,8 @@ function handleAdd() {
 
 function handleEdit(row: Certificate) {
   editingCert.value = row
+  // 证书/私钥原文属于敏感信息，后端不回显；编辑时默认进入“文件路径”页
+  activeTab.value = 'file'
   certForm.value = {
     domain: row.domain,
     certFile: row.certFile,
@@ -238,7 +242,7 @@ onMounted(() => {
       preset="card"
       style="width: 600px;"
     >
-      <n-tabs type="line">
+      <n-tabs type="line" v-model:value="activeTab">
         <n-tab-pane name="file" tab="文件路径">
           <n-form label-placement="left" label-width="100">
             <n-form-item label="域名">
@@ -260,6 +264,9 @@ onMounted(() => {
         </n-tab-pane>
 
         <n-tab-pane name="content" tab="直接输入">
+          <n-alert v-if="editingCert" type="info" style="margin-bottom: 12px;">
+            已保存的证书/私钥原文不会回显（安全考虑）。如需修改，请重新粘贴新的证书与私钥内容后保存。
+          </n-alert>
           <n-form label-placement="left" label-width="100">
             <n-form-item label="域名">
               <n-input v-model:value="certForm.domain" placeholder="例如: example.com" />

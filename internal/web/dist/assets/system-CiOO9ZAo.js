@@ -1,1 +1,0 @@
-import{r as t}from"./request-eL2jHpwR.js";const a={getStatus(){return t.get("/system/status")},getXrayStatus(){return t.get("/xray/status")},startXray(){return t.post("/xray/start")},stopXray(){return t.post("/xray/stop")},restartXray(){return t.post("/xray/restart")},getTraffic(){return t.get("/traffic")},getTrafficByTag(r){return t.get(`/traffic/${r}`)}};export{a as s};
