@@ -216,10 +216,13 @@ func main() {
 	startTrafficSyncJob()
 	go reconcileFirewall()
 
-	// 启动服务器
-	port := "54321"
-	if p := os.Getenv("PORT"); p != "" {
-		port = p
+	// 启动服务器（优先级：PORT 环境变量 > settings.webPort > 默认 54321）
+	port := strings.TrimSpace(settings["webPort"])
+	if port == "" {
+		port = "54321"
+	}
+	if p := os.Getenv("PORT"); strings.TrimSpace(p) != "" {
+		port = strings.TrimSpace(p)
 	}
 
 	go func() {
