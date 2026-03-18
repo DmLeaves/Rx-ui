@@ -24,13 +24,19 @@ const certForm = ref<CreateCertificateParams>({
   autoRenew: false
 })
 
+function isValidExpiryDate(dateStr: string): boolean {
+  if (!dateStr) return false
+  const d = new Date(dateStr)
+  return !Number.isNaN(d.getTime()) && d.getUTCFullYear() > 2000
+}
+
 function formatDate(dateStr: string): string {
-  if (!dateStr) return '-'
+  if (!isValidExpiryDate(dateStr)) return '-'
   return new Date(dateStr).toLocaleDateString('zh-CN')
 }
 
 function getDaysUntilExpiry(dateStr: string): number {
-  if (!dateStr) return Infinity
+  if (!isValidExpiryDate(dateStr)) return Infinity
   const expiry = new Date(dateStr)
   const now = new Date()
   return Math.ceil((expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))

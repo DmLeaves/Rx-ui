@@ -4,7 +4,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"rxui/internal/model"
@@ -60,26 +64,20 @@ func (s *CertificateService) Create(cert *model.Certificate) error {
 		return ErrCertDomainExists
 	}
 
-	// 解析证书获取过期时间
-	if cert.CertFile != "" {
-		expiresAt, err := s.parseCertExpiry(cert.CertFile)
-		if err == nil {
-			cert.ExpiresAt = expiresAt
-		}
+	if err := s.ensureCertificateFiles(cert); err != nil {
+		return err
 	}
+	applyExpiresAt(cert, s)
 
 	return s.repo.Create(cert)
 }
 
 // Update 更新证书
 func (s *CertificateService) Update(cert *model.Certificate) error {
-	// 重新解析过期时间
-	if cert.CertFile != "" {
-		expiresAt, err := s.parseCertExpiry(cert.CertFile)
-		if err == nil {
-			cert.ExpiresAt = expiresAt
-		}
+	if err := s.ensureCertificateFiles(cert); err != nil {
+		return err
 	}
+	applyExpiresAt(cert, s)
 
 	return s.repo.Update(cert)
 }
@@ -97,14 +95,66 @@ func (s *CertificateService) CheckValidity(cert *model.Certificate) error {
 	return nil
 }
 
-// parseCertExpiry 解析证书文件获取过期时间
-func (s *CertificateService) parseCertExpiry(certFile string) (time.Time, error) {
-	data, err := os.ReadFile(certFile)
-	if err != nil {
-		return time.Time{}, err
+func sanitizeDomainForFilename(domain string) string {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		d = "cert"
+	}
+	re := regexp.MustCompile(`[^a-zA-Z0-9._-]`)
+	d = re.ReplaceAllString(d, "_")
+	return d
+}
+
+func (s *CertificateService) ensureCertificateFiles(cert *model.Certificate) error {
+	// 如果已经提供了文件路径，直接使用
+	if strings.TrimSpace(cert.CertFile) != "" && strings.TrimSpace(cert.KeyFile) != "" {
+		return nil
 	}
 
-	block, _ := pem.Decode(data)
+	// 直接输入模式：将内容落盘为文件，供入站 TLS 复用
+	if strings.TrimSpace(cert.CertContent) == "" || strings.TrimSpace(cert.KeyContent) == "" {
+		return nil
+	}
+
+	certDir := filepath.Join("data", "certs")
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		return fmt.Errorf("创建证书目录失败: %w", err)
+	}
+
+	base := fmt.Sprintf("%s-%d", sanitizeDomainForFilename(cert.Domain), time.Now().Unix())
+	certPath := filepath.Join(certDir, base+".crt")
+	keyPath := filepath.Join(certDir, base+".key")
+
+	if err := os.WriteFile(certPath, []byte(strings.TrimSpace(cert.CertContent)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("写入证书文件失败: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(strings.TrimSpace(cert.KeyContent)+"\n"), 0o600); err != nil {
+		return fmt.Errorf("写入私钥文件失败: %w", err)
+	}
+
+	cert.CertFile = certPath
+	cert.KeyFile = keyPath
+	return nil
+}
+
+func applyExpiresAt(cert *model.Certificate, s *CertificateService) {
+	if strings.TrimSpace(cert.CertFile) != "" {
+		expiresAt, err := s.parseCertExpiry(cert.CertFile)
+		if err == nil {
+			cert.ExpiresAt = expiresAt
+			return
+		}
+	}
+	if strings.TrimSpace(cert.CertContent) != "" {
+		expiresAt, err := s.parseCertExpiryFromContent(cert.CertContent)
+		if err == nil {
+			cert.ExpiresAt = expiresAt
+		}
+	}
+}
+
+func (s *CertificateService) parseCertExpiryFromContent(certContent string) (time.Time, error) {
+	block, _ := pem.Decode([]byte(certContent))
 	if block == nil {
 		return time.Time{}, ErrCertInvalid
 	}
@@ -113,8 +163,17 @@ func (s *CertificateService) parseCertExpiry(certFile string) (time.Time, error)
 	if err != nil {
 		return time.Time{}, err
 	}
-
 	return cert.NotAfter, nil
+}
+
+// parseCertExpiry 解析证书文件获取过期时间
+func (s *CertificateService) parseCertExpiry(certFile string) (time.Time, error) {
+	data, err := os.ReadFile(certFile)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return s.parseCertExpiryFromContent(string(data))
 }
 
 // RefreshAll 刷新所有证书的过期时间
@@ -125,12 +184,10 @@ func (s *CertificateService) RefreshAll() error {
 	}
 
 	for _, cert := range certs {
-		if cert.CertFile != "" {
-			expiresAt, err := s.parseCertExpiry(cert.CertFile)
-			if err == nil && !expiresAt.Equal(cert.ExpiresAt) {
-				cert.ExpiresAt = expiresAt
-				s.repo.Update(cert)
-			}
+		old := cert.ExpiresAt
+		applyExpiresAt(cert, s)
+		if !cert.ExpiresAt.Equal(old) && !cert.ExpiresAt.IsZero() {
+			s.repo.Update(cert)
 		}
 	}
 
