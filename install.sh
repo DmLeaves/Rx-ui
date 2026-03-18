@@ -13,6 +13,7 @@ SERVICE_NAME="rx-ui"
 REPO="${RX_UI_REPO:-DmLeaves/Rx-ui}"
 TAG="${RX_UI_TAG:-latest}"
 SKIP_SYSTEMD="${RX_UI_SKIP_SYSTEMD:-0}"
+INSTALL_VERSION="$TAG"
 
 arch=$(uname -m)
 case "$arch" in
@@ -27,6 +28,8 @@ cd /usr/local
 if [[ "$TAG" == "latest" ]]; then
   ASSET_URL="https://github.com/${REPO}/releases/latest/download/rx-ui-linux-${arch}.tar.gz"
   echo -e "${green}下载 Rx-ui latest (${arch})...${plain}"
+  INSTALL_VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+  [[ -z "$INSTALL_VERSION" ]] && INSTALL_VERSION="latest"
 else
   ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/rx-ui-linux-${arch}.tar.gz"
   echo -e "${green}下载 Rx-ui ${TAG} (${arch})...${plain}"
@@ -67,6 +70,8 @@ if [[ -d /tmp/rx-ui-upgrade-backup/data ]]; then
   mkdir -p "${APP_DIR}/data"
   cp -a /tmp/rx-ui-upgrade-backup/data/. "${APP_DIR}/data/"
 fi
+
+echo "$INSTALL_VERSION" > "${APP_DIR}/VERSION"
 
 wget -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/main/rx-ui.service"
 wget -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/main/Rx-ui.sh"

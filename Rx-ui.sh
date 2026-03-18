@@ -6,6 +6,7 @@ yellow='\033[0;33m'
 plain='\033[0m'
 
 APP_NAME="rx-ui"
+SCRIPT_VERSION="v0.1.5"
 APP_DIR="/usr/local/rx-ui"
 APP_BIN="${APP_DIR}/rx-ui"
 SERVICE_NAME="rx-ui"
@@ -22,6 +23,10 @@ check_install() {
 
 run_app() {
   (cd "$APP_DIR" && "$APP_BIN" "$@")
+}
+
+get_installed_version() {
+  [[ -f "${APP_DIR}/VERSION" ]] && cat "${APP_DIR}/VERSION" || echo "unknown"
 }
 
 start_panel(){ systemctl start "$SERVICE_NAME"; logi "已启动"; }
@@ -75,7 +80,7 @@ uninstall_panel(){
 
 show_usage(){
   cat <<EOF
-Rx-ui 管理命令:
+Rx-ui 管理命令 (script: ${SCRIPT_VERSION}, installed: $(get_installed_version)):
   Rx-ui                打开交互菜单
   Rx-ui start          启动
   Rx-ui stop           停止
@@ -94,7 +99,7 @@ EOF
 
 show_menu(){
   while true; do
-    echo -e "\n${green}Rx-ui 管理菜单${plain}"
+    echo -e "\n${green}Rx-ui 管理菜单${plain} (script: ${SCRIPT_VERSION} | installed: $(get_installed_version))"
     echo " 0. 退出"
     echo " 1. 启动"
     echo " 2. 停止"
