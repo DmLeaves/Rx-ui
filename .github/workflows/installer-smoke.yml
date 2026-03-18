@@ -88,4 +88,6 @@ jobs:
         run: |
           set -euo pipefail
           cd /tmp
-          /usr/bin/Rx-ui setting | grep -E '^webPort:'
+          OUTPUT=$(/usr/bin/Rx-ui setting -show)
+          echo "$OUTPUT"
+          echo "$OUTPUT" | grep -E 'webPort:\s*[0-9]+'
