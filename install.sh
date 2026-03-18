@@ -10,7 +10,9 @@ plain='\033[0m'
 
 APP_DIR="/usr/local/rx-ui"
 SERVICE_NAME="rx-ui"
-REPO="DmLeaves/Rx-ui"
+REPO="${RX_UI_REPO:-DmLeaves/Rx-ui}"
+TAG="${RX_UI_TAG:-latest}"
+SKIP_SYSTEMD="${RX_UI_SKIP_SYSTEMD:-0}"
 
 arch=$(uname -m)
 case "$arch" in
@@ -22,8 +24,15 @@ esac
 mkdir -p /usr/local
 cd /usr/local
 
-echo -e "${green}下载 Rx-ui latest (${arch})...${plain}"
-wget -O rx-ui-linux-${arch}.tar.gz https://github.com/${REPO}/releases/latest/download/rx-ui-linux-${arch}.tar.gz
+if [[ "$TAG" == "latest" ]]; then
+  ASSET_URL="https://github.com/${REPO}/releases/latest/download/rx-ui-linux-${arch}.tar.gz"
+  echo -e "${green}下载 Rx-ui latest (${arch})...${plain}"
+else
+  ASSET_URL="https://github.com/${REPO}/releases/download/${TAG}/rx-ui-linux-${arch}.tar.gz"
+  echo -e "${green}下载 Rx-ui ${TAG} (${arch})...${plain}"
+fi
+
+wget -O rx-ui-linux-${arch}.tar.gz "${ASSET_URL}"
 
 # 升级时保留数据
 if [[ -d "${APP_DIR}" ]]; then
@@ -33,28 +42,44 @@ if [[ -d "${APP_DIR}" ]]; then
     rm -rf /tmp/rx-ui-upgrade-backup/data
     cp -a "${APP_DIR}/data" /tmp/rx-ui-upgrade-backup/data
   fi
-  systemctl stop ${SERVICE_NAME} 2>/dev/null || true
+  if [[ "$SKIP_SYSTEMD" != "1" ]]; then
+    systemctl stop ${SERVICE_NAME} 2>/dev/null || true
+  fi
   rm -rf "${APP_DIR}"
 fi
 
 mkdir -p "${APP_DIR}"
 tar -xzf rx-ui-linux-${arch}.tar.gz -C "${APP_DIR}"
 rm -f rx-ui-linux-${arch}.tar.gz
-chmod +x "${APP_DIR}/rx-ui"
+
+# 兼容历史/当前不同打包名
+if [[ -f "${APP_DIR}/rx-ui" ]]; then
+  chmod +x "${APP_DIR}/rx-ui"
+elif [[ -f "${APP_DIR}/rx-ui-linux-${arch}" ]]; then
+  mv "${APP_DIR}/rx-ui-linux-${arch}" "${APP_DIR}/rx-ui"
+  chmod +x "${APP_DIR}/rx-ui"
+else
+  echo -e "${red}安装失败:${plain} 解压后未找到可执行文件（期望 rx-ui 或 rx-ui-linux-${arch}）"
+  exit 1
+fi
 
 if [[ -d /tmp/rx-ui-upgrade-backup/data ]]; then
   mkdir -p "${APP_DIR}/data"
   cp -a /tmp/rx-ui-upgrade-backup/data/. "${APP_DIR}/data/"
 fi
 
-wget -O /etc/systemd/system/${SERVICE_NAME}.service https://raw.githubusercontent.com/${REPO}/main/rx-ui.service
-wget -O /usr/bin/Rx-ui https://raw.githubusercontent.com/${REPO}/main/Rx-ui.sh
+wget -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/main/rx-ui.service"
+wget -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/main/Rx-ui.sh"
 chmod +x /usr/bin/Rx-ui
 ln -sf /usr/bin/Rx-ui /usr/bin/rx-ui
 
-systemctl daemon-reload
-systemctl enable ${SERVICE_NAME}
-systemctl restart ${SERVICE_NAME}
+if [[ "$SKIP_SYSTEMD" == "1" ]]; then
+  echo -e "${yellow}跳过 systemd 操作（RX_UI_SKIP_SYSTEMD=1）${plain}"
+else
+  systemctl daemon-reload
+  systemctl enable ${SERVICE_NAME}
+  systemctl restart ${SERVICE_NAME}
+fi
 
 echo -e "${green}安装完成${plain}"
 echo "------------------------------------------"
