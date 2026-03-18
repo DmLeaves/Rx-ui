@@ -6,7 +6,7 @@ yellow='\033[0;33m'
 plain='\033[0m'
 
 APP_NAME="rx-ui"
-SCRIPT_VERSION="v0.1.17"
+SCRIPT_VERSION="v0.1.18"
 APP_DIR="/usr/local/rx-ui"
 APP_BIN="${APP_DIR}/rx-ui"
 SERVICE_NAME="rx-ui"
