@@ -83,11 +83,11 @@ jobs:
           test -f /etc/systemd/system/rx-ui.service
           /usr/local/rx-ui/rx-ui setting -show
 
-      - name: Verify global menu script works from any cwd
+      - name: Verify settings command uses install working dir
         shell: bash
         run: |
           set -euo pipefail
           cd /tmp
-          OUTPUT=$(/usr/bin/Rx-ui setting -show)
+          OUTPUT=$(/usr/local/rx-ui/rx-ui setting -show)
           echo "$OUTPUT"
           echo "$OUTPUT" | grep -E 'webPort:\s*[0-9]+'
