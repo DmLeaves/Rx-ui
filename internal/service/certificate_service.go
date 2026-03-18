@@ -74,6 +74,25 @@ func (s *CertificateService) Create(cert *model.Certificate) error {
 
 // Update 更新证书
 func (s *CertificateService) Update(cert *model.Certificate) error {
+	existing, err := s.repo.FindByID(cert.ID)
+	if err != nil {
+		return ErrCertNotFound
+	}
+
+	// 仅在请求显式提供时覆盖，避免编辑时把已有路径/内容清空
+	if strings.TrimSpace(cert.CertFile) == "" {
+		cert.CertFile = existing.CertFile
+	}
+	if strings.TrimSpace(cert.KeyFile) == "" {
+		cert.KeyFile = existing.KeyFile
+	}
+	if strings.TrimSpace(cert.CertContent) == "" {
+		cert.CertContent = existing.CertContent
+	}
+	if strings.TrimSpace(cert.KeyContent) == "" {
+		cert.KeyContent = existing.KeyContent
+	}
+
 	if err := s.ensureCertificateFiles(cert); err != nil {
 		return err
 	}
