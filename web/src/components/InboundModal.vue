@@ -145,7 +145,7 @@ const certificateOptions = computed(() => certificates.value.map(c => ({
 
 // 是否可以设置传输
 const canEnableStream = computed(() => 
-  ['vmess', 'vless', 'shadowsocks'].includes(formData.value.protocol)
+  ['vmess', 'vless', 'trojan', 'shadowsocks'].includes(formData.value.protocol)
 )
 
 // 是否可以设置 TLS
@@ -388,32 +388,138 @@ function handleClose() {
   emit('update:show', false)
 }
 
-// 监听显示状态，重置表单
+function parseJSON<T = any>(text?: string, fallback: T = {} as T): T {
+  if (!text) return fallback
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return fallback
+  }
+}
+
+function resetForCreate() {
+  formData.value = {
+    remark: '',
+    enable: true,
+    listen: '',
+    port: Math.floor(Math.random() * 40000) + 10000,
+    protocol: 'vmess',
+    settings: '',
+    streamSettings: '',
+    sniffing: '',
+    tag: '',
+    total: 0,
+    expiryTime: 0
+  }
+  protocolSettings.value = {
+    uuid: uuidv4(),
+    alterId: 0,
+    flow: '',
+    method: 'aes-256-gcm',
+    password: generatePassword(),
+    trojanPassword: generatePassword(),
+    auth: 'noauth',
+    user: '',
+    pass: '',
+    address: '',
+    followRedirect: false,
+    network: 'tcp,udp'
+  }
+  streamSettings.value = {
+    network: 'tcp',
+    security: 'none',
+    serverName: '',
+    tcpHeaderType: 'none',
+    wsPath: '/',
+    wsHost: '',
+    grpcServiceName: '',
+    kcpType: 'none',
+    kcpSeed: ''
+  }
+  sniffingSettings.value = {
+    enabled: true,
+    destOverride: ['http', 'tls']
+  }
+  selectedCertificateId.value = null
+  tlsCertificateFile.value = ''
+  tlsKeyFile.value = ''
+}
+
+function fillForEdit() {
+  if (!props.editData) return
+
+  formData.value = {
+    remark: props.editData.remark || '',
+    enable: !!props.editData.enable,
+    listen: props.editData.listen || '',
+    port: props.editData.port || 0,
+    protocol: props.editData.protocol || 'vmess',
+    settings: props.editData.settings || '',
+    streamSettings: props.editData.streamSettings || '',
+    sniffing: props.editData.sniffing || '',
+    tag: props.editData.tag || '',
+    total: props.editData.total || 0,
+    expiryTime: props.editData.expiryTime || 0
+  }
+
+  const ps = parseJSON<any>(props.editData.settings, {})
+  const ss = parseJSON<any>(props.editData.streamSettings, {})
+  const sn = parseJSON<any>(props.editData.sniffing, { enabled: true, destOverride: ['http', 'tls'] })
+
+  const firstClient = Array.isArray(ps.clients) && ps.clients.length > 0 ? ps.clients[0] : {}
+  protocolSettings.value.uuid = firstClient.id || protocolSettings.value.uuid || uuidv4()
+  protocolSettings.value.alterId = firstClient.alterId || 0
+  protocolSettings.value.flow = firstClient.flow || ''
+  protocolSettings.value.trojanPassword = firstClient.password || ''
+  protocolSettings.value.method = ps.method || 'aes-256-gcm'
+  protocolSettings.value.password = ps.password || ''
+  protocolSettings.value.address = ps.address || ''
+  protocolSettings.value.network = ps.network || 'tcp,udp'
+  protocolSettings.value.followRedirect = !!ps.followRedirect
+  protocolSettings.value.auth = ps.auth || 'noauth'
+  if (Array.isArray(ps.accounts) && ps.accounts.length > 0) {
+    protocolSettings.value.user = ps.accounts[0]?.user || ''
+    protocolSettings.value.pass = ps.accounts[0]?.pass || ''
+  } else {
+    protocolSettings.value.user = ''
+    protocolSettings.value.pass = ''
+  }
+
+  streamSettings.value.network = ss.network || 'tcp'
+  streamSettings.value.security = ss.security || 'none'
+  streamSettings.value.serverName = ss.tlsSettings?.serverName || ''
+  streamSettings.value.tcpHeaderType = ss.tcpSettings?.header?.type || 'none'
+  streamSettings.value.wsPath = ss.wsSettings?.path || '/'
+  streamSettings.value.wsHost = ss.wsSettings?.headers?.Host || ''
+  streamSettings.value.grpcServiceName = ss.grpcSettings?.serviceName || ''
+  streamSettings.value.kcpType = ss.kcpSettings?.header?.type || 'none'
+  streamSettings.value.kcpSeed = ss.kcpSettings?.seed || ''
+
+  const certPair = Array.isArray(ss.tlsSettings?.certificates) && ss.tlsSettings.certificates.length > 0
+    ? ss.tlsSettings.certificates[0]
+    : null
+  tlsCertificateFile.value = certPair?.certificateFile || ''
+  tlsKeyFile.value = certPair?.keyFile || ''
+
+  const matched = certificates.value.find(c => c.certFile === tlsCertificateFile.value && c.keyFile === tlsKeyFile.value)
+  selectedCertificateId.value = matched?.id ?? null
+
+  sniffingSettings.value = {
+    enabled: !!sn.enabled,
+    destOverride: Array.isArray(sn.destOverride) ? sn.destOverride : ['http', 'tls']
+  }
+}
+
+// 监听显示状态
 watch(() => props.show, async (show) => {
   if (!show) return
 
   await loadCertificates()
 
-  if (!props.editData) {
-    formData.value = {
-      remark: '',
-      enable: true,
-      listen: '',
-      port: Math.floor(Math.random() * 40000) + 10000,
-      protocol: 'vmess',
-      settings: '',
-      streamSettings: '',
-      sniffing: '',
-      tag: '',
-      total: 0,
-      expiryTime: 0
-    }
-    protocolSettings.value.uuid = uuidv4()
-    protocolSettings.value.password = generatePassword()
-    protocolSettings.value.trojanPassword = generatePassword()
-    selectedCertificateId.value = null
-    tlsCertificateFile.value = ''
-    tlsKeyFile.value = ''
+  if (props.editData) {
+    fillForEdit()
+  } else {
+    resetForCreate()
   }
 })
 </script>

@@ -60,14 +60,31 @@ function showQR(row: Inbound) {
   showQRModal.value = true
 }
 
-function copyLink(row: Inbound) {
+async function copyLink(row: Inbound) {
   const link = generateInboundLink(row)
   if (!link) {
     message.warning('该协议不支持生成链接')
     return
   }
-  navigator.clipboard.writeText(link)
-  message.success('链接已复制')
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(link)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = link
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    message.success('链接已复制')
+  } catch {
+    message.error('复制失败，请手动复制')
+  }
 }
 
 // 订阅功能
@@ -81,9 +98,28 @@ function openSubscription() {
   showSubscriptionModal.value = true
 }
 
-function copySubscription() {
-  navigator.clipboard.writeText(subscriptionLink.value)
-  message.success('订阅内容已复制')
+async function copySubscription() {
+  const text = subscriptionLink.value || ''
+  if (!text) return
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    message.success('订阅内容已复制')
+  } catch {
+    message.error('复制失败，请手动复制')
+  }
 }
 
 function showSubscriptionQR() {

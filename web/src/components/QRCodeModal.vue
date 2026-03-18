@@ -30,8 +30,23 @@ async function generateQR() {
 }
 
 async function copyLink() {
+  const text = props.link || ''
+  if (!text) return
+
   try {
-    await navigator.clipboard.writeText(props.link)
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
     message.success('已复制到剪贴板')
   } catch {
     message.error('复制失败，请手动复制')
