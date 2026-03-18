@@ -159,6 +159,10 @@ const canSniffing = computed(() =>
   ['vmess', 'vless', 'trojan', 'shadowsocks'].includes(formData.value.protocol)
 )
 
+const hasTlsCertPair = computed(() =>
+  !!tlsCertificateFile.value.trim() && !!tlsKeyFile.value.trim()
+)
+
 function generateUUID() {
   protocolSettings.value.uuid = uuidv4()
 }
@@ -361,8 +365,10 @@ function validateForm(): string | null {
       return 'TLS 模式下 SNI/ServerName 不能为空'
     }
     if (streamSettings.value.security === 'tls') {
-      const hasCertPair = !!tlsCertificateFile.value.trim() && !!tlsKeyFile.value.trim()
-      if (!hasCertPair) {
+      if (!hasTlsCertPair.value) {
+        if (selectedCertificateId.value !== null) {
+          return '所选证书未包含文件路径，请在证书管理补全 certFile/keyFile，或清空选择后手动填写'
+        }
         return 'TLS 模式下请先选择证书，或手动填写证书/私钥文件路径'
       }
     }
@@ -771,11 +777,15 @@ watch(() => props.show, async (show) => {
             />
           </n-form-item>
 
-          <n-alert v-if="selectedCertificateId !== null" type="success" style="margin-bottom: 12px;">
+          <n-alert v-if="selectedCertificateId !== null && hasTlsCertPair" type="success" style="margin-bottom: 12px;">
             已使用证书管理中的路径自动配置证书与私钥。
           </n-alert>
 
-          <template v-else>
+          <n-alert v-else-if="selectedCertificateId !== null && !hasTlsCertPair" type="warning" style="margin-bottom: 12px;">
+            当前所选证书未包含文件路径，请手动填写证书/私钥路径，或到证书管理补全路径。
+          </n-alert>
+
+          <template v-if="selectedCertificateId === null || !hasTlsCertPair">
             <n-form-item label="证书文件">
               <n-input v-model:value="tlsCertificateFile" placeholder="如: /etc/ssl/certs/fullchain.pem" />
             </n-form-item>
