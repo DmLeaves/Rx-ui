@@ -1,29 +1,36 @@
 package main
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
 	"rxui/internal/model"
@@ -35,6 +42,11 @@ var (
 	xrayProcess *os.Process
 	xrayRunning bool
 	startTime   = time.Now()
+
+	tgMu             sync.Mutex
+	tgWorkerRunning  bool
+	tgStopCh         chan struct{}
+	tgAuthorizedChat = map[int64]bool{}
 )
 
 func initDatabase() {
@@ -157,8 +169,8 @@ func main() {
 		api.POST("/inbounds/:id/resetTraffic", handleResetInboundTraffic)
 
 		// 客户端 API（使用 /clients 独立路由）
-		api.GET("/clients", handleGetClients)          // ?inboundId=xxx
-		api.POST("/clients", handleCreateClient)       // body 包含 inboundId
+		api.GET("/clients", handleGetClients)    // ?inboundId=xxx
+		api.POST("/clients", handleCreateClient) // body 包含 inboundId
 		api.PUT("/clients/:id", handleUpdateClient)
 		api.DELETE("/clients/:id", handleDeleteClient)
 
@@ -187,6 +199,15 @@ func main() {
 		// 系统设置 API
 		api.GET("/settings", handleGetSettings)
 		api.PUT("/settings", handleUpdateSettings)
+
+		// Telegram Bot API
+		tg := api.Group("/telegram")
+		{
+			tg.GET("/status", handleTelegramStatus)
+			tg.POST("/setup", handleTelegramSetup)
+			tg.POST("/toggle", handleTelegramToggle)
+			tg.POST("/reset-secret", handleTelegramResetSecret)
+		}
 
 		// 防火墙管理 API
 		firewall := api.Group("/firewall")
@@ -227,6 +248,7 @@ func main() {
 	startTrafficSyncJob()
 	startCertRenewJob()
 	go reconcileFirewall()
+	maybeStartTelegramWorker()
 
 	// 启动服务器（优先级：PORT 环境变量 > settings.webPort > 默认 54321）
 	port := strings.TrimSpace(settings["webPort"])
@@ -250,6 +272,7 @@ func main() {
 	<-sigChan
 
 	log.Println("Shutting down...")
+	stopTelegramWorker()
 	stopXray()
 	time.Sleep(1 * time.Second)
 	log.Println("Goodbye!")
@@ -934,16 +957,20 @@ func parseCert(pemText string) *x509.Certificate {
 // ===== 系统设置 API =====
 
 var defaultSettings = map[string]string{
-	"webPort":          "54321",
-	"webBasePath":      "/",
-	"webCertFile":      "",
-	"webKeyFile":       "",
-	"xrayBinPath":      "", // 自动检测
-	"timeZone":         "Asia/Shanghai",
-	"acmeEmail":        "",
-	"acmeDnsProvider":  "cloudflare",
-	"acmeDnsApiToken":  "",
-	"acmeEnabled":      "false",
+	"webPort":           "54321",
+	"webBasePath":       "/",
+	"webCertFile":       "",
+	"webKeyFile":        "",
+	"xrayBinPath":       "", // 自动检测
+	"timeZone":          "Asia/Shanghai",
+	"acmeEmail":         "",
+	"acmeDnsProvider":   "cloudflare",
+	"acmeDnsApiToken":   "",
+	"acmeEnabled":       "false",
+	"tgBotEnabled":      "false",
+	"tgBotToken":        "",
+	"tgBotAuthSecret":   "",
+	"tgBotAllowedChats": "[]",
 }
 
 var settings = map[string]string{}
@@ -965,6 +992,7 @@ func loadSettingsFromDB() {
 		}
 		upsertSetting(k, settings[k])
 	}
+	loadTelegramAuthorizedFromSettings()
 }
 
 func upsertSetting(key, value string) {
@@ -993,6 +1021,12 @@ func handleUpdateSettings(c *gin.Context) {
 	for k, v := range newSettings {
 		settings[k] = v
 		upsertSetting(k, v)
+	}
+	loadTelegramAuthorizedFromSettings()
+	if strings.TrimSpace(settings["tgBotEnabled"]) == "true" {
+		maybeStartTelegramWorker()
+	} else {
+		stopTelegramWorker()
 	}
 	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "设置已更新"})
@@ -1364,7 +1398,7 @@ func handleSystemStatus(c *gin.Context) {
 				"running": xrayRunning,
 				"version": xrayVersionStr,
 			},
-			"panelUptime": int64(time.Since(startTime).Seconds()),
+			"panelUptime":  int64(time.Since(startTime).Seconds()),
 			"inboundCount": len(inbounds),
 		},
 	})
@@ -1561,4 +1595,636 @@ func generateInboundLink(inbound *model.Inbound, host string) string {
 	}
 
 	return ""
+}
+
+// ===== Telegram Bot (AI-oriented command bridge) =====
+
+type tgUpdateResp struct {
+	Ok     bool `json:"ok"`
+	Result []struct {
+		UpdateID int64 `json:"update_id"`
+		Message  struct {
+			MessageID int64  `json:"message_id"`
+			Date      int64  `json:"date"`
+			Text      string `json:"text"`
+			Chat      struct {
+				ID   int64  `json:"id"`
+				Type string `json:"type"`
+			} `json:"chat"`
+			From struct {
+				ID        int64  `json:"id"`
+				Username  string `json:"username"`
+				FirstName string `json:"first_name"`
+			} `json:"from"`
+		} `json:"message"`
+	} `json:"result"`
+}
+
+type tgExecReq struct {
+	Action string                 `json:"action"`
+	Params map[string]interface{} `json:"params"`
+}
+
+func getTgToken() string { return strings.TrimSpace(settings["tgBotToken"]) }
+
+func maskToken(v string) string {
+	if len(v) < 10 {
+		return ""
+	}
+	return v[:6] + "***" + v[len(v)-4:]
+}
+
+func generateAuthSecret() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("rxui-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func loadTelegramAuthorizedFromSettings() {
+	tgMu.Lock()
+	defer tgMu.Unlock()
+	tgAuthorizedChat = map[int64]bool{}
+	raw := strings.TrimSpace(settings["tgBotAllowedChats"])
+	if raw == "" {
+		return
+	}
+	var arr []int64
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		return
+	}
+	for _, id := range arr {
+		tgAuthorizedChat[id] = true
+	}
+}
+
+func persistTelegramAuthorized() {
+	tgMu.Lock()
+	ids := make([]int64, 0, len(tgAuthorizedChat))
+	for id := range tgAuthorizedChat {
+		ids = append(ids, id)
+	}
+	tgMu.Unlock()
+	b, _ := json.Marshal(ids)
+	settings["tgBotAllowedChats"] = string(b)
+	upsertSetting("tgBotAllowedChats", settings["tgBotAllowedChats"])
+}
+
+func isAuthorizedChat(chatID int64) bool {
+	tgMu.Lock()
+	defer tgMu.Unlock()
+	return tgAuthorizedChat[chatID]
+}
+
+func authorizeChat(chatID int64) {
+	tgMu.Lock()
+	tgAuthorizedChat[chatID] = true
+	tgMu.Unlock()
+	persistTelegramAuthorized()
+}
+
+func handleTelegramStatus(c *gin.Context) {
+	token := getTgToken()
+	configured := token != ""
+	enabled := strings.TrimSpace(settings["tgBotEnabled"]) == "true"
+	secretSet := strings.TrimSpace(settings["tgBotAuthSecret"]) != ""
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
+		"enabled":       enabled,
+		"configured":    configured,
+		"tokenMasked":   maskToken(token),
+		"authSecretSet": secretSet,
+		"workerRunning": tgWorkerRunning,
+		"authorized":    len(tgAuthorizedChat),
+	}})
+}
+
+func handleTelegramSetup(c *gin.Context) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Token) == "" {
+		c.JSON(400, gin.H{"code": 1, "message": "token 不能为空"})
+		return
+	}
+	ok, botName, err := verifyTelegramToken(strings.TrimSpace(req.Token))
+	if err != nil || !ok {
+		c.JSON(400, gin.H{"code": 1, "message": "token 验证失败: " + err.Error()})
+		return
+	}
+	settings["tgBotToken"] = strings.TrimSpace(req.Token)
+	upsertSetting("tgBotToken", settings["tgBotToken"])
+	if strings.TrimSpace(settings["tgBotAuthSecret"]) == "" {
+		settings["tgBotAuthSecret"] = generateAuthSecret()
+		upsertSetting("tgBotAuthSecret", settings["tgBotAuthSecret"])
+	}
+	settings["tgBotEnabled"] = "true"
+	upsertSetting("tgBotEnabled", "true")
+	maybeStartTelegramWorker()
+	c.JSON(200, gin.H{"code": 0, "message": "Bot 已启用", "data": gin.H{"bot": botName, "authSecret": settings["tgBotAuthSecret"]}})
+}
+
+func handleTelegramToggle(c *gin.Context) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	if req.Enabled {
+		settings["tgBotEnabled"] = "true"
+		upsertSetting("tgBotEnabled", "true")
+		maybeStartTelegramWorker()
+	} else {
+		settings["tgBotEnabled"] = "false"
+		upsertSetting("tgBotEnabled", "false")
+		stopTelegramWorker()
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok"})
+}
+
+func handleTelegramResetSecret(c *gin.Context) {
+	settings["tgBotAuthSecret"] = generateAuthSecret()
+	upsertSetting("tgBotAuthSecret", settings["tgBotAuthSecret"])
+	tgMu.Lock()
+	tgAuthorizedChat = map[int64]bool{}
+	tgMu.Unlock()
+	persistTelegramAuthorized()
+	c.JSON(200, gin.H{"code": 0, "message": "已重置", "data": gin.H{"authSecret": settings["tgBotAuthSecret"]}})
+}
+
+func verifyTelegramToken(token string) (bool, string, error) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+	resp, err := http.Get(url)
+	if err != nil {
+		return false, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var parsed struct {
+		Ok     bool `json:"ok"`
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false, "", err
+	}
+	if !parsed.Ok {
+		return false, "", fmt.Errorf(parsed.Description)
+	}
+	return true, parsed.Result.Username, nil
+}
+
+func maybeStartTelegramWorker() {
+	tgMu.Lock()
+	defer tgMu.Unlock()
+	if tgWorkerRunning {
+		return
+	}
+	if strings.TrimSpace(settings["tgBotEnabled"]) != "true" || getTgToken() == "" {
+		return
+	}
+	tgStopCh = make(chan struct{})
+	tgWorkerRunning = true
+	go runTelegramWorker(tgStopCh)
+}
+
+func stopTelegramWorker() {
+	tgMu.Lock()
+	defer tgMu.Unlock()
+	if !tgWorkerRunning {
+		return
+	}
+	close(tgStopCh)
+	tgWorkerRunning = false
+}
+
+func runTelegramWorker(stop <-chan struct{}) {
+	defer func() {
+		tgMu.Lock()
+		tgWorkerRunning = false
+		tgMu.Unlock()
+	}()
+	offset := int64(0)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		updates, err := tgGetUpdates(getTgToken(), offset)
+		if err != nil {
+			log.Printf("[WARN] telegram getUpdates error: %v", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		for _, up := range updates.Result {
+			offset = up.UpdateID + 1
+			handleTelegramMessage(up.Message.Chat.ID, up.Message.Chat.Type, strings.TrimSpace(up.Message.Text))
+		}
+	}
+}
+
+func tgGetUpdates(token string, offset int64) (*tgUpdateResp, error) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates", token)
+	payload := map[string]interface{}{"timeout": 25, "offset": offset}
+	b, _ := json.Marshal(payload)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var out tgUpdateResp
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, err
+	}
+	if !out.Ok {
+		return nil, fmt.Errorf("telegram response not ok")
+	}
+	return &out, nil
+}
+
+func tgSend(chatID int64, text string) {
+	token := getTgToken()
+	if token == "" {
+		return
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+	if len(text) > 3500 {
+		text = text[:3500] + "..."
+	}
+	payload := map[string]interface{}{"chat_id": chatID, "text": text}
+	b, _ := json.Marshal(payload)
+	_, _ = http.Post(url, "application/json", bytes.NewReader(b))
+}
+
+func handleTelegramMessage(chatID int64, chatType, text string) {
+	if chatType != "private" {
+		return
+	}
+	if text == "" {
+		return
+	}
+	if strings.HasPrefix(text, "/auth ") {
+		secret := strings.TrimSpace(strings.TrimPrefix(text, "/auth"))
+		if secret == strings.TrimSpace(settings["tgBotAuthSecret"]) && secret != "" {
+			authorizeChat(chatID)
+			tgSend(chatID, "{\"ok\":true,\"message\":\"authorized\"}")
+		} else {
+			tgSend(chatID, "{\"ok\":false,\"error\":\"invalid_auth_secret\"}")
+		}
+		return
+	}
+	if !isAuthorizedChat(chatID) {
+		tgSend(chatID, "{\"ok\":false,\"error\":\"unauthorized\",\"hint\":\"use /auth <secret>\"}")
+		return
+	}
+
+	switch {
+	case text == "/ping":
+		tgSend(chatID, "{\"ok\":true,\"message\":\"pong\"}")
+	case text == "/whoami":
+		tgSend(chatID, fmt.Sprintf("{\"ok\":true,\"chatId\":%d,\"role\":\"admin\"}", chatID))
+	case text == "/capabilities":
+		tgSend(chatID, telegramCapabilitiesJSON())
+	case strings.HasPrefix(text, "/query "):
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/query"))
+		res := handleTelegramQueryExec(payload, true)
+		tgSend(chatID, res)
+	case strings.HasPrefix(text, "/exec "):
+		payload := strings.TrimSpace(strings.TrimPrefix(text, "/exec"))
+		res := handleTelegramQueryExec(payload, false)
+		tgSend(chatID, res)
+	default:
+		tgSend(chatID, "{\"ok\":false,\"error\":\"unknown_command\"}")
+	}
+}
+
+func telegramCapabilitiesJSON() string {
+	return `{"ok":true,"actions":{"query":["xray.status","sys.status","inbound.list","inbound.get","client.list","client.get","cert.list","cert.get","logs.tail"],"exec":["xray.start","xray.stop","xray.restart","inbound.create","inbound.update","inbound.delete","client.create","client.update","client.delete","cert.create","cert.update","cert.delete","cert.renew","net.ping"]}}`
+}
+
+func handleTelegramQueryExec(payload string, queryOnly bool) string {
+	var req tgExecReq
+	if err := json.Unmarshal([]byte(payload), &req); err != nil {
+		return `{"ok":false,"error":{"code":"INVALID_JSON"}}`
+	}
+	action := strings.TrimSpace(req.Action)
+	if action == "" {
+		return `{"ok":false,"error":{"code":"MISSING_ACTION"}}`
+	}
+	out := map[string]interface{}{"ok": true, "action": action}
+
+	switch action {
+	case "xray.status":
+		out["data"] = map[string]interface{}{"running": xrayRunning}
+	case "sys.status":
+		var inbounds []model.Inbound
+		db.Find(&inbounds)
+		totalUp, totalDown := int64(0), int64(0)
+		for _, i := range inbounds {
+			totalUp += i.Up
+			totalDown += i.Down
+		}
+		out["data"] = map[string]interface{}{"inboundCount": len(inbounds), "traffic": map[string]interface{}{"up": totalUp, "down": totalDown}}
+	case "inbound.list":
+		var inbounds []model.Inbound
+		db.Order("id desc").Find(&inbounds)
+		out["data"] = inbounds
+	case "inbound.get":
+		id := intFromAny(req.Params["id"])
+		var inbound model.Inbound
+		if id > 0 {
+			if err := db.First(&inbound, id).Error; err != nil {
+				return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+			}
+		} else {
+			tag := strFromAny(req.Params["tag"])
+			if tag == "" || db.Where("tag = ?", tag).First(&inbound).Error != nil {
+				return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+			}
+		}
+		out["data"] = inbound
+	case "client.list":
+		var clients []model.Client
+		inboundID := intFromAny(req.Params["inboundId"])
+		if inboundID > 0 {
+			db.Where("inbound_id = ?", inboundID).Order("id desc").Find(&clients)
+		} else {
+			db.Order("id desc").Find(&clients)
+		}
+		out["data"] = clients
+	case "client.get":
+		id := intFromAny(req.Params["id"])
+		var client model.Client
+		if id <= 0 || db.First(&client, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		out["data"] = client
+	case "cert.list":
+		var certs []model.Certificate
+		db.Order("id desc").Find(&certs)
+		out["data"] = certs
+	case "cert.get":
+		id := intFromAny(req.Params["id"])
+		var cert model.Certificate
+		if id > 0 {
+			if db.First(&cert, id).Error != nil {
+				return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+			}
+		} else {
+			domain := strFromAny(req.Params["domain"])
+			if domain == "" || db.Where("domain = ?", domain).First(&cert).Error != nil {
+				return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+			}
+		}
+		out["data"] = cert
+	case "logs.tail":
+		if !queryOnly {
+			return `{"ok":false,"error":{"code":"QUERY_ONLY_ACTION"}}`
+		}
+		n := intFromAny(req.Params["lines"])
+		if n <= 0 || n > 500 {
+			n = 120
+		}
+		cmd := exec.Command("bash", "-lc", fmt.Sprintf("journalctl -u rx-ui -n %d --no-pager", n))
+		b, err := cmd.CombinedOutput()
+		if err != nil {
+			return `{"ok":false,"error":{"code":"LOG_READ_FAILED"}}`
+		}
+		out["data"] = map[string]interface{}{"logs": string(b)}
+	case "xray.start", "xray.stop", "xray.restart":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		var err error
+		if action == "xray.start" {
+			err = startXray()
+		}
+		if action == "xray.stop" {
+			err = stopXray()
+		}
+		if action == "xray.restart" {
+			_ = stopXray()
+			time.Sleep(200 * time.Millisecond)
+			err = startXray()
+		}
+		if err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"XRAY_ACTION_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = map[string]interface{}{"running": xrayRunning}
+	case "net.ping":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		target := strFromAny(req.Params["target"])
+		if target == "" {
+			return `{"ok":false,"error":{"code":"MISSING_TARGET"}}`
+		}
+		cmd := exec.Command("ping", "-c", "4", "-W", "2", target)
+		b, err := cmd.CombinedOutput()
+		if err != nil && len(b) == 0 {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"PING_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = map[string]interface{}{"target": target, "result": string(b)}
+	case "inbound.create":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		var inbound model.Inbound
+		b, _ := json.Marshal(req.Params)
+		if err := json.Unmarshal(b, &inbound); err != nil {
+			return `{"ok":false,"error":{"code":"INVALID_PARAMS"}}`
+		}
+		if inbound.Tag == "" {
+			inbound.Tag = fmt.Sprintf("inbound-%d", inbound.Port)
+		}
+		if err := db.Create(&inbound).Error; err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"CREATE_FAILED","message":%q}}`, err.Error())
+		}
+		if err := applyInboundRuntimeChanges(); err != nil {
+			_ = db.Delete(&model.Inbound{}, inbound.ID).Error
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"XRAY_APPLY_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = inbound
+	case "inbound.update":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		if id <= 0 {
+			return `{"ok":false,"error":{"code":"MISSING_ID"}}`
+		}
+		var old model.Inbound
+		if db.First(&old, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		inbound := old
+		b, _ := json.Marshal(req.Params)
+		_ = json.Unmarshal(b, &inbound)
+		inbound.ID = old.ID
+		if err := db.Save(&inbound).Error; err != nil {
+			return `{"ok":false,"error":{"code":"UPDATE_FAILED"}}`
+		}
+		if err := applyInboundRuntimeChanges(); err != nil {
+			_ = db.Save(&old).Error
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"XRAY_APPLY_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = inbound
+	case "inbound.delete":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		if id <= 0 {
+			return `{"ok":false,"error":{"code":"MISSING_ID"}}`
+		}
+		_ = db.Where("inbound_id = ?", id).Delete(&model.Client{}).Error
+		_ = db.Delete(&model.Inbound{}, id).Error
+		if err := applyInboundRuntimeChanges(); err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"XRAY_APPLY_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = map[string]interface{}{"deleted": id}
+	case "client.create":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		var client model.Client
+		b, _ := json.Marshal(req.Params)
+		if err := json.Unmarshal(b, &client); err != nil || client.InboundID == 0 {
+			return `{"ok":false,"error":{"code":"INVALID_PARAMS"}}`
+		}
+		if err := db.Create(&client).Error; err != nil {
+			return `{"ok":false,"error":{"code":"CREATE_FAILED"}}`
+		}
+		_ = syncInboundClientsToSettings(client.InboundID)
+		out["data"] = client
+	case "client.update":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		var client model.Client
+		if id <= 0 || db.First(&client, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		inboundID := client.InboundID
+		b, _ := json.Marshal(req.Params)
+		_ = json.Unmarshal(b, &client)
+		client.ID = id
+		if err := db.Save(&client).Error; err != nil {
+			return `{"ok":false,"error":{"code":"UPDATE_FAILED"}}`
+		}
+		_ = syncInboundClientsToSettings(inboundID)
+		out["data"] = client
+	case "client.delete":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		var client model.Client
+		if id <= 0 || db.First(&client, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		inboundID := client.InboundID
+		_ = db.Delete(&model.Client{}, id).Error
+		_ = syncInboundClientsToSettings(inboundID)
+		out["data"] = map[string]interface{}{"deleted": id}
+	case "cert.create":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		var cert model.Certificate
+		b, _ := json.Marshal(req.Params)
+		if err := json.Unmarshal(b, &cert); err != nil || strings.TrimSpace(cert.Domain) == "" {
+			return `{"ok":false,"error":{"code":"INVALID_PARAMS"}}`
+		}
+		if err := ensureCertificateFiles(&cert); err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"CERT_FILE_FAILED","message":%q}}`, err.Error())
+		}
+		fillCertMeta(&cert)
+		if err := db.Create(&cert).Error; err != nil {
+			return `{"ok":false,"error":{"code":"CREATE_FAILED"}}`
+		}
+		out["data"] = cert
+	case "cert.update":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		var cert model.Certificate
+		if id <= 0 || db.First(&cert, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		old := cert
+		b, _ := json.Marshal(req.Params)
+		_ = json.Unmarshal(b, &cert)
+		cert.ID = old.ID
+		if cert.Domain == "" {
+			cert.Domain = old.Domain
+		}
+		if err := ensureCertificateFiles(&cert); err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"CERT_FILE_FAILED","message":%q}}`, err.Error())
+		}
+		fillCertMeta(&cert)
+		if err := db.Save(&cert).Error; err != nil {
+			return `{"ok":false,"error":{"code":"UPDATE_FAILED"}}`
+		}
+		out["data"] = cert
+	case "cert.delete":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		if id <= 0 {
+			return `{"ok":false,"error":{"code":"MISSING_ID"}}`
+		}
+		_ = db.Delete(&model.Certificate{}, id).Error
+		out["data"] = map[string]interface{}{"deleted": id}
+	case "cert.renew":
+		if queryOnly {
+			return `{"ok":false,"error":{"code":"EXEC_ONLY_ACTION"}}`
+		}
+		id := intFromAny(req.Params["id"])
+		var cert model.Certificate
+		if id <= 0 || db.First(&cert, id).Error != nil {
+			return `{"ok":false,"error":{"code":"NOT_FOUND"}}`
+		}
+		if err := renewCertificate(&cert); err != nil {
+			return fmt.Sprintf(`{"ok":false,"error":{"code":"RENEW_FAILED","message":%q}}`, err.Error())
+		}
+		out["data"] = cert
+	default:
+		return fmt.Sprintf(`{"ok":false,"error":{"code":"UNSUPPORTED_ACTION","message":%q}}`, action)
+	}
+
+	bb, _ := json.Marshal(out)
+	return string(bb)
+}
+
+func intFromAny(v interface{}) int {
+	switch x := v.(type) {
+	case float64:
+		return int(x)
+	case int:
+		return x
+	case int64:
+		return int(x)
+	case string:
+		i, _ := strconv.Atoi(strings.TrimSpace(x))
+		return i
+	default:
+		return 0
+	}
+}
+
+func strFromAny(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
 }

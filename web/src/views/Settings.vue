@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NSwitch, NAlert, useMessage } from 'naive-ui'
 import { settingsApi, type Settings } from '@/api/settings'
+import { telegramApi, type TelegramStatus } from '@/api/telegram'
 
 const message = useMessage()
 const loading = ref(false)
@@ -18,6 +19,11 @@ const settings = ref<Settings>({
   acmeDnsApiToken: '',
   acmeEnabled: 'false'
 })
+
+const telegramToken = ref('')
+const telegramStatus = ref<TelegramStatus | null>(null)
+const tgLoading = ref(false)
+const authSecret = ref('')
 
 const timezoneOptions = [
   { label: 'Asia/Shanghai (中国)', value: 'Asia/Shanghai' },
@@ -54,8 +60,62 @@ async function saveSettings() {
   }
 }
 
+async function fetchTelegramStatus() {
+  try {
+    const res = await telegramApi.status()
+    telegramStatus.value = res.data.data
+  } catch {
+    telegramStatus.value = null
+  }
+}
+
+async function setupTelegramBot() {
+  if (!telegramToken.value.trim()) {
+    message.warning('请输入 Bot Token')
+    return
+  }
+  tgLoading.value = true
+  try {
+    const res = await telegramApi.setup(telegramToken.value.trim())
+    authSecret.value = res.data.data?.authSecret || ''
+    message.success('Bot 添加成功')
+    await fetchTelegramStatus()
+  } catch (error: any) {
+    message.error(error.message || 'Bot 添加失败')
+  } finally {
+    tgLoading.value = false
+  }
+}
+
+async function toggleTelegram(enabled: boolean) {
+  tgLoading.value = true
+  try {
+    await telegramApi.toggle(enabled)
+    await fetchTelegramStatus()
+  } catch (error: any) {
+    message.error(error.message || '操作失败')
+  } finally {
+    tgLoading.value = false
+  }
+}
+
+async function resetAuthSecret() {
+  tgLoading.value = true
+  try {
+    const res = await telegramApi.resetSecret()
+    authSecret.value = res.data.data?.authSecret || ''
+    message.success('密钥已重置')
+    await fetchTelegramStatus()
+  } catch (error: any) {
+    message.error(error.message || '重置失败')
+  } finally {
+    tgLoading.value = false
+  }
+}
+
 onMounted(() => {
   fetchSettings()
+  fetchTelegramStatus()
 })
 </script>
 
@@ -110,6 +170,35 @@ onMounted(() => {
           <n-input v-model:value="settings.acmeDnsApiToken" type="password" show-password-on="click" placeholder="Cloudflare API Token" />
         </n-form-item>
       </n-form>
+    </n-card>
+
+    <n-card title="Telegram Bot（AI 控制入口）" style="margin-top: 16px;">
+      <n-alert type="info" style="margin-bottom: 12px;">
+        首次添加后会生成授权密钥，用户在 Telegram 私聊 Bot 发送 <code>/auth &lt;密钥&gt;</code> 完成授权。随后可用 <code>/capabilities</code>、<code>/query</code>、<code>/exec</code> 进行机器可读控制。
+      </n-alert>
+      <n-form label-placement="left" label-width="140">
+        <n-form-item label="Bot Token">
+          <n-input v-model:value="telegramToken" type="password" show-password-on="click" placeholder="123456:ABC..." />
+        </n-form-item>
+        <n-form-item>
+          <n-space>
+            <n-button type="primary" :loading="tgLoading" @click="setupTelegramBot">添加 / 验证 Bot</n-button>
+            <n-button :loading="tgLoading" @click="toggleTelegram(true)">启用</n-button>
+            <n-button :loading="tgLoading" @click="toggleTelegram(false)">停用</n-button>
+            <n-button :loading="tgLoading" @click="resetAuthSecret">重置授权密钥</n-button>
+          </n-space>
+        </n-form-item>
+      </n-form>
+
+      <n-alert v-if="telegramStatus" type="success" style="margin-top: 10px;">
+        状态：{{ telegramStatus.enabled ? '已启用' : '未启用' }} ｜ Worker：{{ telegramStatus.workerRunning ? '运行中' : '未运行' }} ｜ 已授权：{{ telegramStatus.authorized }}
+        <br />
+        Token：{{ telegramStatus.tokenMasked || '未配置' }}
+      </n-alert>
+
+      <n-alert v-if="authSecret" type="warning" style="margin-top: 10px;">
+        首次授权密钥：<code>{{ authSecret }}</code>（请妥善保存）
+      </n-alert>
     </n-card>
 
     <n-card title="其他设置" style="margin-top: 16px;">
