@@ -172,6 +172,7 @@ func main() {
 			certs.POST("", handleCreateCertificate)
 			certs.PUT("/:id", handleUpdateCertificate)
 			certs.POST("/:id/reload", handleReloadCertificate)
+			certs.POST("/:id/renew", handleRenewCertificate)
 			certs.DELETE("/:id", handleDeleteCertificate)
 		}
 
@@ -214,8 +215,9 @@ func main() {
 		log.Printf("Warning: Failed to setup static files: %v", err)
 	}
 
-	// 启动流量同步任务
+	// 启动后台任务
 	startTrafficSyncJob()
+	startCertRenewJob()
 	go reconcileFirewall()
 
 	// 启动服务器（优先级：PORT 环境变量 > settings.webPort > 默认 54321）
@@ -692,6 +694,121 @@ func handleDeleteCertificate(c *gin.Context) {
 	id := c.Param("id")
 	db.Delete(&model.Certificate{}, id)
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+func runLegoRenew(domain string) error {
+	email := strings.TrimSpace(os.Getenv("LEGO_EMAIL"))
+	dnsProvider := strings.TrimSpace(os.Getenv("LEGO_DNS"))
+	if email == "" || dnsProvider == "" {
+		return fmt.Errorf("缺少 LEGO_EMAIL / LEGO_DNS 环境变量")
+	}
+	basePath := "./data/lego"
+	_ = os.MkdirAll(basePath, 0o755)
+
+	cmd := exec.Command("lego",
+		"--accept-tos",
+		"--email", email,
+		"--dns", dnsProvider,
+		"--path", basePath,
+		"-d", domain,
+		"renew",
+		"--days", "30",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("lego renew 失败: %v, 输出: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func applyLegoCertFiles(cert *model.Certificate) error {
+	basePath := "./data/lego/certificates"
+	crt := filepath.Join(basePath, cert.Domain+".crt")
+	key := filepath.Join(basePath, cert.Domain+".key")
+	if _, err := os.Stat(crt); err != nil {
+		return fmt.Errorf("未找到证书文件: %s", crt)
+	}
+	if _, err := os.Stat(key); err != nil {
+		return fmt.Errorf("未找到私钥文件: %s", key)
+	}
+
+	if strings.TrimSpace(cert.CertFile) == "" {
+		cert.CertFile = filepath.Join("data", "certs", cert.Domain+".crt")
+	}
+	if strings.TrimSpace(cert.KeyFile) == "" {
+		cert.KeyFile = filepath.Join("data", "certs", cert.Domain+".key")
+	}
+	_ = os.MkdirAll(filepath.Dir(cert.CertFile), 0o755)
+	_ = os.MkdirAll(filepath.Dir(cert.KeyFile), 0o755)
+
+	crtBytes, err := os.ReadFile(crt)
+	if err != nil {
+		return err
+	}
+	keyBytes, err := os.ReadFile(key)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(cert.CertFile, crtBytes, 0o644); err != nil {
+		return err
+	}
+	if err = os.WriteFile(cert.KeyFile, keyBytes, 0o600); err != nil {
+		return err
+	}
+	cert.CertContent = string(crtBytes)
+	cert.KeyContent = string(keyBytes)
+	fillCertMeta(cert)
+	return nil
+}
+
+func renewCertificate(cert *model.Certificate) error {
+	if strings.TrimSpace(cert.Domain) == "" {
+		return fmt.Errorf("证书域名为空")
+	}
+	if err := runLegoRenew(cert.Domain); err != nil {
+		return err
+	}
+	if err := applyLegoCertFiles(cert); err != nil {
+		return err
+	}
+	return db.Save(cert).Error
+}
+
+func handleRenewCertificate(c *gin.Context) {
+	id := c.Param("id")
+	var cert model.Certificate
+	if err := db.First(&cert, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "证书不存在"})
+		return
+	}
+	if err := renewCertificate(&cert); err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "续签成功", "data": cert})
+}
+
+func startCertRenewJob() {
+	ticker := time.NewTicker(12 * time.Hour)
+	go func() {
+		for range ticker.C {
+			var certs []model.Certificate
+			db.Where("auto_renew = ?", true).Find(&certs)
+			for i := range certs {
+				if certs[i].ExpiresAt.IsZero() {
+					continue
+				}
+				if time.Until(certs[i].ExpiresAt) > 30*24*time.Hour {
+					continue
+				}
+				if err := renewCertificate(&certs[i]); err != nil {
+					log.Printf("[WARN] cert renew failed (%s): %v", certs[i].Domain, err)
+				} else {
+					log.Printf("[INF] cert renewed: %s", certs[i].Domain)
+				}
+			}
+		}
+	}()
 }
 
 func fillCertMeta(cert *model.Certificate) {
