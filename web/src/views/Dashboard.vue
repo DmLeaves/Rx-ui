@@ -1,22 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, onMounted } from 'vue'
 import { NGrid, NGi, NCard, NStatistic, NButton, NSpace, NIcon, useMessage } from 'naive-ui'
 import { RefreshOutline, PlayOutline, StopOutline, ReloadOutline } from '@vicons/ionicons5'
 import { systemApi, type SystemStatus } from '@/api/system'
-import * as echarts from 'echarts'
 
 const message = useMessage()
 const loading = ref(false)
 const status = ref<SystemStatus | null>(null)
-
-const trafficChartRef = ref<HTMLDivElement | null>(null)
-let trafficChart: echarts.ECharts | null = null
-
-const timeLabels = ref<string[]>([])
-const upSeries = ref<number[]>([])
-const downSeries = ref<number[]>([])
-
-let timer: number | null = null
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes === 0) return '0 B'
@@ -36,54 +26,10 @@ function formatUptime(seconds: number): string {
   return `${mins}分钟`
 }
 
-function pushHistory(data: SystemStatus) {
-  const now = new Date()
-  const label = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
-  const maxPoints = 24
-
-  timeLabels.value.push(label)
-  upSeries.value.push(data.traffic.up)
-  downSeries.value.push(data.traffic.down)
-  if (timeLabels.value.length > maxPoints) {
-    timeLabels.value.shift()
-    upSeries.value.shift()
-    downSeries.value.shift()
-  }
-}
-
-function ensureTrafficChart() {
-  if (!trafficChart && trafficChartRef.value) {
-    trafficChart = echarts.init(trafficChartRef.value)
-  }
-}
-
-function renderTrafficChart() {
-  ensureTrafficChart()
-  if (!trafficChart || timeLabels.value.length === 0) return
-  trafficChart.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: { data: ['上行总量', '下行总量'] },
-    xAxis: { type: 'category', data: timeLabels.value },
-    yAxis: {
-      type: 'value',
-      axisLabel: {
-        formatter: (v: number) => formatBytes(v)
-      }
-    },
-    grid: { left: 12, right: 12, top: 36, bottom: 16, containLabel: true },
-    series: [
-      { name: '上行总量', type: 'line', smooth: true, data: upSeries.value },
-      { name: '下行总量', type: 'line', smooth: true, data: downSeries.value }
-    ]
-  })
-}
-
 async function fetchStatus() {
   try {
     const res = await systemApi.getStatus()
     status.value = res.data.data
-    pushHistory(res.data.data)
-    renderTrafficChart()
   } catch (error: any) {
     console.error('获取系统状态失败:', error)
   }
@@ -128,21 +74,8 @@ async function restartXray() {
   }
 }
 
-onMounted(async () => {
-  await nextTick()
-  ensureTrafficChart()
-
+onMounted(() => {
   fetchStatus()
-  timer = window.setInterval(fetchStatus, 5000)
-
-  window.addEventListener('resize', () => {
-    trafficChart?.resize()
-  })
-})
-
-onUnmounted(() => {
-  if (timer) clearInterval(timer)
-  trafficChart?.dispose()
 })
 </script>
 
@@ -176,14 +109,6 @@ onUnmounted(() => {
       <n-gi><n-card><n-statistic label="系统运行时间">{{ formatUptime(status.uptime) }}</n-statistic></n-card></n-gi>
       <n-gi><n-card><n-statistic label="面板运行时间">{{ formatUptime(status.panelUptime) }}</n-statistic></n-card></n-gi>
       <n-gi><n-card><n-statistic label="总流量">↑ {{ formatBytes(status.traffic.up) }} / ↓ {{ formatBytes(status.traffic.down) }}</n-statistic></n-card></n-gi>
-    </n-grid>
-
-    <n-grid :cols="1" :x-gap="16" :y-gap="16" style="margin-top: 16px;">
-      <n-gi>
-        <n-card title="流量趋势（累计）">
-          <div ref="trafficChartRef" style="height: 320px; width: 100%;"></div>
-        </n-card>
-      </n-gi>
     </n-grid>
   </div>
 </template>
