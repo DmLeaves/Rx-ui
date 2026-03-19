@@ -12,14 +12,12 @@ func TestGetXrayStats_WithMockXrayApi(t *testing.T) {
 	script := `#!/usr/bin/env bash
 if [[ "$1" == "api" && "$2" == "statsquery" ]]; then
 cat <<'OUT'
-stat: <
-  name: "inbound>>>demo_tag>>>traffic>>>uplink"
-  value: 333
->
-stat: <
-  name: "inbound>>>demo_tag>>>traffic>>>downlink"
-  value: 666
->
+{
+  "stat": [
+    {"name": "inbound>>>demo_tag>>>traffic>>>uplink", "value": 333},
+    {"name": "inbound>>>demo_tag>>>traffic>>>downlink", "value": 666}
+  ]
+}
 OUT
 exit 0
 fi

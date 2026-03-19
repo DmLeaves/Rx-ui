@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -35,23 +36,39 @@ func queryXrayStats(pattern string) (string, error) {
 
 func parseStatOutput(output string) map[string]int64 {
 	result := map[string]int64{}
-	var pendingName string
 
+	// 优先解析 xray api statsquery 的 JSON 输出
+	type statItem struct {
+		Name  string `json:"name"`
+		Value int64  `json:"value"`
+	}
+	type statResp struct {
+		Stat []statItem `json:"stat"`
+	}
+	var sr statResp
+	if err := json.Unmarshal([]byte(output), &sr); err == nil && len(sr.Stat) > 0 {
+		for _, s := range sr.Stat {
+			if strings.TrimSpace(s.Name) == "" {
+				continue
+			}
+			result[s.Name] = s.Value
+		}
+		return result
+	}
+
+	// 回退：兼容文本输出（单行/多行）
+	var pendingName string
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		// 兼容单行格式：name: "..." value: 123
 		if m := statLineRe.FindStringSubmatch(line); len(m) == 3 {
 			v, _ := strconv.ParseInt(m[2], 10, 64)
 			result[m[1]] = v
 			pendingName = ""
 			continue
 		}
-
-		// 兼容多行 protobuf 文本格式
 		if m := nameOnlyRe.FindStringSubmatch(line); len(m) == 2 {
 			pendingName = m[1]
 			continue

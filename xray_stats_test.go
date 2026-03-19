@@ -30,3 +30,17 @@ name: "inbound>>>demo>>>traffic>>>downlink" value: 222`
 		t.Fatalf("single-line parse failed: %#v", m)
 	}
 }
+
+func TestParseStatOutput_JSON(t *testing.T) {
+	input := `{
+  "stat": [
+    {"name": "inbound>>>demo_json>>>traffic>>>uplink", "value": 7},
+    {"name": "inbound>>>demo_json>>>traffic>>>downlink", "value": 9}
+  ]
+}`
+
+	m := parseStatOutput(input)
+	if m["inbound>>>demo_json>>>traffic>>>uplink"] != 7 || m["inbound>>>demo_json>>>traffic>>>downlink"] != 9 {
+		t.Fatalf("json parse failed: %#v", m)
+	}
+}
