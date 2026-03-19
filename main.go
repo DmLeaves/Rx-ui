@@ -19,11 +19,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 
 	"rxui/internal/model"
@@ -157,8 +157,8 @@ func main() {
 		api.POST("/inbounds/:id/resetTraffic", handleResetInboundTraffic)
 
 		// 客户端 API（使用 /clients 独立路由）
-		api.GET("/clients", handleGetClients)          // ?inboundId=xxx
-		api.POST("/clients", handleCreateClient)       // body 包含 inboundId
+		api.GET("/clients", handleGetClients)    // ?inboundId=xxx
+		api.POST("/clients", handleCreateClient) // body 包含 inboundId
 		api.PUT("/clients/:id", handleUpdateClient)
 		api.DELETE("/clients/:id", handleDeleteClient)
 
@@ -187,6 +187,17 @@ func main() {
 		// 系统设置 API
 		api.GET("/settings", handleGetSettings)
 		api.PUT("/settings", handleUpdateSettings)
+
+		// Control API（AI 直连）
+		control := api.Group("/control")
+		{
+			control.GET("/bootstrap", handleControlBootstrap)
+			control.POST("/query", handleControlQuery)
+			control.POST("/exec", handleControlExec)
+			control.GET("/clients", handleControlListClients)
+			control.POST("/clients", handleControlUpsertClient)
+			control.DELETE("/clients/:id", handleControlDeleteClient)
+		}
 
 		// 防火墙管理 API
 		firewall := api.Group("/firewall")
@@ -934,16 +945,17 @@ func parseCert(pemText string) *x509.Certificate {
 // ===== 系统设置 API =====
 
 var defaultSettings = map[string]string{
-	"webPort":          "54321",
-	"webBasePath":      "/",
-	"webCertFile":      "",
-	"webKeyFile":       "",
-	"xrayBinPath":      "", // 自动检测
-	"timeZone":         "Asia/Shanghai",
-	"acmeEmail":        "",
-	"acmeDnsProvider":  "cloudflare",
-	"acmeDnsApiToken":  "",
-	"acmeEnabled":      "false",
+	"webPort":         "54321",
+	"webBasePath":     "/",
+	"webCertFile":     "",
+	"webKeyFile":      "",
+	"xrayBinPath":     "", // 自动检测
+	"timeZone":        "Asia/Shanghai",
+	"acmeEmail":       "",
+	"acmeDnsProvider": "cloudflare",
+	"acmeDnsApiToken": "",
+	"acmeEnabled":     "false",
+	"controlClients":  "{}",
 }
 
 var settings = map[string]string{}
@@ -1364,7 +1376,7 @@ func handleSystemStatus(c *gin.Context) {
 				"running": xrayRunning,
 				"version": xrayVersionStr,
 			},
-			"panelUptime": int64(time.Since(startTime).Seconds()),
+			"panelUptime":  int64(time.Since(startTime).Seconds()),
 			"inboundCount": len(inbounds),
 		},
 	})
