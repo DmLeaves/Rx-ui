@@ -51,7 +51,14 @@ function pushHistory(data: SystemStatus) {
   }
 }
 
+function ensureTrafficChart() {
+  if (!trafficChart && trafficChartRef.value) {
+    trafficChart = echarts.init(trafficChartRef.value)
+  }
+}
+
 function renderTrafficChart() {
+  ensureTrafficChart()
   if (!trafficChart || timeLabels.value.length === 0) return
   trafficChart.setOption({
     tooltip: { trigger: 'axis' },
@@ -123,7 +130,7 @@ async function restartXray() {
 
 onMounted(async () => {
   await nextTick()
-  if (trafficChartRef.value) trafficChart = echarts.init(trafficChartRef.value)
+  ensureTrafficChart()
 
   fetchStatus()
   timer = window.setInterval(fetchStatus, 5000)
@@ -171,7 +178,7 @@ onUnmounted(() => {
       <n-gi><n-card><n-statistic label="总流量">↑ {{ formatBytes(status.traffic.up) }} / ↓ {{ formatBytes(status.traffic.down) }}</n-statistic></n-card></n-gi>
     </n-grid>
 
-    <n-grid :cols="1" :x-gap="16" :y-gap="16" style="margin-top: 16px;" v-if="status">
+    <n-grid :cols="1" :x-gap="16" :y-gap="16" style="margin-top: 16px;">
       <n-gi>
         <n-card title="流量趋势（累计）">
           <div ref="trafficChartRef" style="height: 320px; width: 100%;"></div>
