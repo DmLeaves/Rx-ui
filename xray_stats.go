@@ -17,7 +17,11 @@ type TrafficStats struct {
 	Downlink int64  `json:"downlink"`
 }
 
-var statLineRe = regexp.MustCompile(`name:\s*"([^"]+)"\s+value:\s*([0-9]+)`) // xray api statsquery output
+var (
+	statLineRe  = regexp.MustCompile(`name:\s*"([^"]+)"\s+value:\s*([0-9]+)`) // one-line fallback
+	nameOnlyRe  = regexp.MustCompile(`name:\s*"([^"]+)"`)
+	valueOnlyRe = regexp.MustCompile(`value:\s*([0-9]+)`)
+)
 
 func queryXrayStats(pattern string) (string, error) {
 	xrayBin := getXrayBinPath()
@@ -31,17 +35,34 @@ func queryXrayStats(pattern string) (string, error) {
 
 func parseStatOutput(output string) map[string]int64 {
 	result := map[string]int64{}
+	var pendingName string
+
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		m := statLineRe.FindStringSubmatch(line)
-		if len(m) != 3 {
+
+		// 兼容单行格式：name: "..." value: 123
+		if m := statLineRe.FindStringSubmatch(line); len(m) == 3 {
+			v, _ := strconv.ParseInt(m[2], 10, 64)
+			result[m[1]] = v
+			pendingName = ""
 			continue
 		}
-		v, _ := strconv.ParseInt(m[2], 10, 64)
-		result[m[1]] = v
+
+		// 兼容多行 protobuf 文本格式
+		if m := nameOnlyRe.FindStringSubmatch(line); len(m) == 2 {
+			pendingName = m[1]
+			continue
+		}
+		if pendingName != "" {
+			if m := valueOnlyRe.FindStringSubmatch(line); len(m) == 2 {
+				v, _ := strconv.ParseInt(m[1], 10, 64)
+				result[pendingName] = v
+				pendingName = ""
+			}
+		}
 	}
 	return result
 }
