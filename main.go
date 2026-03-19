@@ -310,25 +310,73 @@ func handleCreateInbound(c *gin.Context) {
 	if inbound.Tag == "" {
 		inbound.Tag = fmt.Sprintf("inbound-%d", inbound.Port)
 	}
-	db.Create(&inbound)
+	if err := db.Create(&inbound).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "创建失败: " + err.Error()})
+		return
+	}
+	if err := applyInboundRuntimeChanges(); err != nil {
+		_ = db.Delete(&model.Inbound{}, inbound.ID).Error
+		c.JSON(500, gin.H{"code": 1, "message": "入站已回滚，Xray 应用失败: " + err.Error()})
+		return
+	}
 	go reconcileFirewall()
-	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": inbound})
+	msg := "创建成功"
+	if xrayRunning {
+		msg = "创建成功，已应用到 Xray"
+	}
+	c.JSON(201, gin.H{"code": 0, "message": msg, "data": inbound})
 }
 
 func handleUpdateInbound(c *gin.Context) {
 	id := c.Param("id")
-	var inbound model.Inbound
-	if err := db.First(&inbound, id).Error; err != nil {
+	var oldInbound model.Inbound
+	if err := db.First(&oldInbound, id).Error; err != nil {
 		c.JSON(404, gin.H{"code": 1, "message": "入站规则不存在"})
 		return
 	}
+	inbound := oldInbound
 	if err := c.ShouldBindJSON(&inbound); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
-	db.Save(&inbound)
+	inbound.ID = oldInbound.ID
+	if err := db.Save(&inbound).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "更新失败: " + err.Error()})
+		return
+	}
+	if err := applyInboundRuntimeChanges(); err != nil {
+		_ = db.Save(&oldInbound).Error
+		c.JSON(500, gin.H{"code": 1, "message": "更新已回滚，Xray 应用失败: " + err.Error()})
+		return
+	}
 	go reconcileFirewall()
-	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": inbound})
+	msg := "更新成功"
+	if xrayRunning {
+		msg = "更新成功，已应用到 Xray"
+	}
+	c.JSON(200, gin.H{"code": 0, "message": msg, "data": inbound})
+}
+
+func applyInboundRuntimeChanges() error {
+	if !xrayRunning {
+		return nil
+	}
+	if err := generateXrayConfig(); err != nil {
+		return fmt.Errorf("生成配置失败: %w", err)
+	}
+	xrayBin := getXrayBinPath()
+	testCmd := exec.Command(xrayBin, "run", "-test", "-c", "./data/xray.json")
+	if out, err := testCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("配置校验失败: %v, 输出: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := stopXray(); err != nil {
+		return fmt.Errorf("停止 Xray 失败: %w", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := startXray(); err != nil {
+		return fmt.Errorf("启动 Xray 失败: %w", err)
+	}
+	return nil
 }
 
 func handleDeleteInbound(c *gin.Context) {
