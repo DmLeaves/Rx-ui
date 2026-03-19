@@ -125,6 +125,13 @@ func main() {
 		log.Printf("警告: Xray 安装失败: %v", err)
 	}
 
+	// 启动面板时自动启动 Xray（安装后/重启后无需手动启动）
+	if err := startXray(); err != nil {
+		log.Printf("警告: Xray 自动启动失败: %v", err)
+	} else {
+		log.Printf("Xray 已自动启动")
+	}
+
 	// 设置 Gin
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
