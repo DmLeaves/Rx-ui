@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NSwitch, NAlert, useMessage } from 'naive-ui'
 import { settingsApi, type Settings } from '@/api/settings'
 
 const message = useMessage()
@@ -12,7 +12,11 @@ const settings = ref<Settings>({
   webCertFile: '',
   webKeyFile: '',
   xrayBinPath: '/usr/local/bin/xray',
-  timeZone: 'Asia/Shanghai'
+  timeZone: 'Asia/Shanghai',
+  acmeEmail: '',
+  acmeDnsProvider: 'cloudflare',
+  acmeDnsApiToken: '',
+  acmeEnabled: 'false'
 })
 
 const timezoneOptions = [
@@ -80,6 +84,30 @@ onMounted(() => {
       <n-form label-placement="left" label-width="120">
         <n-form-item label="Xray 路径">
           <n-input v-model:value="settings.xrayBinPath" placeholder="/usr/local/bin/xray" />
+        </n-form-item>
+      </n-form>
+    </n-card>
+
+    <n-card title="ACME 自动续签（Lego）" style="margin-top: 16px;">
+      <n-alert type="info" style="margin-bottom: 12px;">
+        配置后可在证书页启用 autoRenew，并支持手动“立即续签”。当前先支持 Cloudflare DNS。
+      </n-alert>
+      <n-form label-placement="left" label-width="120">
+        <n-form-item label="启用 ACME">
+          <n-switch v-model:value="settings.acmeEnabled" checked-value="true" unchecked-value="false" />
+        </n-form-item>
+        <n-form-item label="邮箱">
+          <n-input v-model:value="settings.acmeEmail" placeholder="acme 账户邮箱" />
+        </n-form-item>
+        <n-form-item label="DNS Provider">
+          <n-select
+            v-model:value="settings.acmeDnsProvider"
+            :options="[{ label: 'Cloudflare', value: 'cloudflare' }]"
+            style="width: 260px;"
+          />
+        </n-form-item>
+        <n-form-item label="DNS API Token">
+          <n-input v-model:value="settings.acmeDnsApiToken" type="password" show-password-on="click" placeholder="Cloudflare API Token" />
         </n-form-item>
       </n-form>
     </n-card>

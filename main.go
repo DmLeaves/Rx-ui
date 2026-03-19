@@ -171,6 +171,7 @@ func main() {
 			certs.GET("/expiring", handleGetExpiringCertificates)
 			certs.POST("", handleCreateCertificate)
 			certs.PUT("/:id", handleUpdateCertificate)
+			certs.GET("/acme/status", handleGetAcmeStatus)
 			certs.POST("/:id/reload", handleReloadCertificate)
 			certs.POST("/:id/renew", handleRenewCertificate)
 			certs.DELETE("/:id", handleDeleteCertificate)
@@ -696,12 +697,46 @@ func handleDeleteCertificate(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 
-func runLegoRenew(domain string) error {
-	email := strings.TrimSpace(os.Getenv("LEGO_EMAIL"))
-	dnsProvider := strings.TrimSpace(os.Getenv("LEGO_DNS"))
-	if email == "" || dnsProvider == "" {
-		return fmt.Errorf("缺少 LEGO_EMAIL / LEGO_DNS 环境变量")
+func getAcmeStatus() (bool, []string) {
+	missing := make([]string, 0)
+	if strings.TrimSpace(settings["acmeEnabled"]) != "true" {
+		missing = append(missing, "请先在系统设置启用 ACME")
 	}
+	if strings.TrimSpace(settings["acmeEmail"]) == "" {
+		missing = append(missing, "acmeEmail")
+	}
+	provider := strings.TrimSpace(settings["acmeDnsProvider"])
+	if provider == "" {
+		missing = append(missing, "acmeDnsProvider")
+	} else if provider == "cloudflare" {
+		if strings.TrimSpace(settings["acmeDnsApiToken"]) == "" {
+			missing = append(missing, "acmeDnsApiToken")
+		}
+	} else {
+		missing = append(missing, "暂不支持的 DNS provider: "+provider)
+	}
+	return len(missing) == 0, missing
+}
+
+func handleGetAcmeStatus(c *gin.Context) {
+	ok, missing := getAcmeStatus()
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
+		"configured": ok,
+		"provider":   settings["acmeDnsProvider"],
+		"email":      settings["acmeEmail"],
+		"missing":    missing,
+	}})
+}
+
+func runLegoRenew(domain string) error {
+	ok, missing := getAcmeStatus()
+	if !ok {
+		return fmt.Errorf("ACME 配置不完整: %s", strings.Join(missing, ", "))
+	}
+	email := strings.TrimSpace(settings["acmeEmail"])
+	dnsProvider := strings.TrimSpace(settings["acmeDnsProvider"])
+	dnsToken := strings.TrimSpace(settings["acmeDnsApiToken"])
+
 	basePath := "./data/lego"
 	_ = os.MkdirAll(basePath, 0o755)
 
@@ -714,6 +749,8 @@ func runLegoRenew(domain string) error {
 		"renew",
 		"--days", "30",
 	)
+	cmd.Env = append(os.Environ(), "CLOUDFLARE_DNS_API_TOKEN="+dnsToken)
+
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("lego renew 失败: %v, 输出: %s", err, strings.TrimSpace(string(out)))
@@ -842,12 +879,16 @@ func parseCert(pemText string) *x509.Certificate {
 // ===== 系统设置 API =====
 
 var defaultSettings = map[string]string{
-	"webPort":     "54321",
-	"webBasePath": "/",
-	"webCertFile": "",
-	"webKeyFile":  "",
-	"xrayBinPath": "", // 自动检测
-	"timeZone":    "Asia/Shanghai",
+	"webPort":          "54321",
+	"webBasePath":      "/",
+	"webCertFile":      "",
+	"webKeyFile":       "",
+	"xrayBinPath":      "", // 自动检测
+	"timeZone":         "Asia/Shanghai",
+	"acmeEmail":        "",
+	"acmeDnsProvider":  "cloudflare",
+	"acmeDnsApiToken":  "",
+	"acmeEnabled":      "false",
 }
 
 var settings = map[string]string{}

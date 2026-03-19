@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, h } from 'vue'
+import { useRouter } from 'vue-router'
 import { NDataTable, NButton, NSpace, NIcon, NPopconfirm, NTag, NModal, NForm, NFormItem, NInput, NSwitch, NAlert, useMessage, NTabs, NTabPane } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { AddOutline, RefreshOutline, TrashOutline, CreateOutline, WarningOutline, SyncOutline } from '@vicons/ionicons5'
 import { certificateApi, type Certificate, type CreateCertificateParams } from '@/api/certificate'
 
 const message = useMessage()
+const router = useRouter()
 const loading = ref(false)
 const certificates = ref<Certificate[]>([])
 const expiringCerts = ref<Certificate[]>([])
 const onlyExpiring = ref(false)
+const acmeStatus = ref<{ configured: boolean, missing: string[] } | null>(null)
 
 // 弹窗
 const showModal = ref(false)
@@ -83,11 +86,12 @@ const columns: DataTableColumns<Certificate> = [
   {
     title: '操作',
     key: 'actions',
-    width: 160,
+    width: 210,
     render: (row) => h(NSpace, { size: 'small' }, {
       default: () => [
         h(NButton, { size: 'small', quaternary: true, onClick: () => handleEdit(row) }, { icon: () => h(NIcon, null, { default: () => h(CreateOutline) }) }),
         h(NButton, { size: 'small', quaternary: true, onClick: () => handleReload(row.id) }, { icon: () => h(NIcon, null, { default: () => h(SyncOutline) }) }),
+        h(NButton, { size: 'small', quaternary: true, type: 'primary', onClick: () => handleRenew(row.id) }, { default: () => '续签' }),
         h(NPopconfirm, { onPositiveClick: () => handleDelete(row.id) }, {
           trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, { icon: () => h(NIcon, null, { default: () => h(TrashOutline) }) }),
           default: () => '确定删除该证书?'
@@ -115,6 +119,15 @@ async function fetchExpiring() {
     expiringCerts.value = res.data.data || []
   } catch (error) {
     // 静默失败
+  }
+}
+
+async function fetchAcmeStatus() {
+  try {
+    const res = await certificateApi.getAcmeStatus()
+    acmeStatus.value = res.data.data || null
+  } catch {
+    acmeStatus.value = null
   }
 }
 
@@ -153,6 +166,10 @@ function handleEdit(row: Certificate) {
 async function handleSubmit() {
   if (!certForm.value.domain) {
     message.warning('请输入域名')
+    return
+  }
+  if (certForm.value.autoRenew && acmeStatus.value && !acmeStatus.value.configured) {
+    message.error('ACME 未配置完成，请先到系统设置完成 ACME 配置')
     return
   }
 
@@ -201,9 +218,22 @@ async function handleDelete(id: number) {
   }
 }
 
+async function handleRenew(id: number) {
+  try {
+    await certificateApi.renew(id)
+    message.success('续签成功')
+    fetchCertificates()
+    fetchExpiring()
+    fetchAcmeStatus()
+  } catch (error: any) {
+    message.error(error.message || '续签失败')
+  }
+}
+
 onMounted(() => {
   fetchCertificates()
   fetchExpiring()
+  fetchAcmeStatus()
 })
 </script>
 
@@ -233,6 +263,15 @@ onMounted(() => {
       </template>
       有 {{ expiringCerts.length }} 个证书将在 30 天内过期：
       {{ expiringCerts.map(c => c.domain).join(', ') }}
+    </n-alert>
+
+    <n-alert
+      v-if="acmeStatus && !acmeStatus.configured"
+      type="info"
+      style="margin-bottom: 16px;"
+    >
+      自动续签尚未配置完成：{{ acmeStatus.missing.join('，') }}。
+      <n-button text type="primary" @click="router.push('/settings')">去系统设置配置 ACME</n-button>
     </n-alert>
 
     <n-data-table

@@ -8,6 +8,10 @@ export interface Settings {
   webKeyFile: string
   xrayBinPath: string
   timeZone: string
+  acmeEmail: string
+  acmeDnsProvider: string
+  acmeDnsApiToken: string
+  acmeEnabled: string
 }
 
 export const settingsApi = {

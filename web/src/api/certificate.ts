@@ -26,6 +26,13 @@ export interface CreateCertificateParams {
   expiresAt?: string
 }
 
+export interface AcmeStatus {
+  configured: boolean
+  provider: string
+  email: string
+  missing: string[]
+}
+
 export const certificateApi = {
   list() {
     return request.get<ApiResponse<Certificate[]>>('/certificates')
@@ -49,6 +56,14 @@ export const certificateApi = {
 
   reload(id: number) {
     return request.post<ApiResponse<Certificate>>(`/certificates/${id}/reload`)
+  },
+
+  renew(id: number) {
+    return request.post<ApiResponse<Certificate>>(`/certificates/${id}/renew`)
+  },
+
+  getAcmeStatus() {
+    return request.get<ApiResponse<AcmeStatus>>('/certificates/acme/status')
   },
 
   getExpiring(days: number = 30) {
