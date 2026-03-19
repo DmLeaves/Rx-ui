@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"rxui/internal/model"
+	"gorm.io/gorm"
 )
 
 type TrafficStats struct {
@@ -22,6 +24,14 @@ var (
 	statLineRe  = regexp.MustCompile(`name:\s*"([^"]+)"\s+value:\s*([0-9]+)`) // one-line fallback
 	nameOnlyRe  = regexp.MustCompile(`name:\s*"([^"]+)"`)
 	valueOnlyRe = regexp.MustCompile(`value:\s*([0-9]+)`)
+)
+
+var (
+	trafficMu           sync.Mutex
+	lastInboundUplink   = map[string]int64{}
+	lastInboundDownlink = map[string]int64{}
+	lastClientUplink    = map[int]int64{}
+	lastClientDownlink  = map[int]int64{}
 )
 
 func queryXrayStats(pattern string) (string, error) {
@@ -139,17 +149,48 @@ func getInboundTraffic(tag string) (uplink, downlink int64, err error) {
 	return 0, 0, nil
 }
 
-// syncTrafficToDatabase 同步流量到数据库（写入绝对值）
+// syncTrafficToDatabase 同步流量到数据库（累计增量）
 func syncTrafficToDatabase() error {
 	stats, err := getXrayStats()
 	if err != nil {
 		return err
 	}
+
+	trafficMu.Lock()
+	defer trafficMu.Unlock()
+
 	for _, s := range stats {
-		db.Model(&model.Inbound{}).Where("tag = ?", s.Tag).Updates(map[string]interface{}{
-			"up":   s.Uplink,
-			"down": s.Downlink,
-		})
+		prevUp, hasPrevUp := lastInboundUplink[s.Tag]
+		prevDown, hasPrevDown := lastInboundDownlink[s.Tag]
+
+		deltaUp := int64(0)
+		deltaDown := int64(0)
+		if hasPrevUp {
+			deltaUp = s.Uplink - prevUp
+			if deltaUp < 0 {
+				// Xray 重启后计数器归零，当前值作为新的增量
+				deltaUp = s.Uplink
+			}
+		}
+		if hasPrevDown {
+			deltaDown = s.Downlink - prevDown
+			if deltaDown < 0 {
+				deltaDown = s.Downlink
+			}
+		}
+
+		lastInboundUplink[s.Tag] = s.Uplink
+		lastInboundDownlink[s.Tag] = s.Downlink
+
+		if hasPrevUp || hasPrevDown {
+			if deltaUp > 0 || deltaDown > 0 {
+				db.Model(&model.Inbound{}).Where("tag = ?", s.Tag).Updates(map[string]interface{}{
+					"up":       gorm.Expr("up + ?", deltaUp),
+					"down":     gorm.Expr("down + ?", deltaDown),
+					"all_time": gorm.Expr("COALESCE(all_time, 0) + ?", deltaUp+deltaDown),
+				})
+			}
+		}
 	}
 
 	// 客户端流量（需要客户端在 settings 里带 email=clt-<id>）
@@ -171,10 +212,33 @@ func syncTrafficToDatabase() error {
 			if convErr != nil {
 				continue
 			}
+
 			if dir == "uplink" {
-				db.Model(&model.Client{}).Where("id = ?", id).Update("up", v)
+				prev, hasPrev := lastClientUplink[id]
+				delta := int64(0)
+				if hasPrev {
+					delta = v - prev
+					if delta < 0 {
+						delta = v
+					}
+				}
+				lastClientUplink[id] = v
+				if hasPrev && delta > 0 {
+					db.Model(&model.Client{}).Where("id = ?", id).Update("up", gorm.Expr("up + ?", delta))
+				}
 			} else if dir == "downlink" {
-				db.Model(&model.Client{}).Where("id = ?", id).Update("down", v)
+				prev, hasPrev := lastClientDownlink[id]
+				delta := int64(0)
+				if hasPrev {
+					delta = v - prev
+					if delta < 0 {
+						delta = v
+					}
+				}
+				lastClientDownlink[id] = v
+				if hasPrev && delta > 0 {
+					db.Model(&model.Client{}).Where("id = ?", id).Update("down", gorm.Expr("down + ?", delta))
+				}
 			}
 		}
 	}
