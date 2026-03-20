@@ -197,6 +197,7 @@ func main() {
 			control.GET("/clients", handleControlListClients)
 			control.POST("/clients", handleControlUpsertClient)
 			control.DELETE("/clients/:id", handleControlDeleteClient)
+			control.GET("/audit", handleControlAuditList)
 		}
 
 		// 防火墙管理 API

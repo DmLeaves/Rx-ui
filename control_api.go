@@ -35,6 +35,13 @@ var (
 	nonceMu     sync.Mutex
 	seenNonces        = map[string]int64{}
 	nonceWindow int64 = 120
+
+	requestMu   sync.Mutex
+	requestSeen = map[string]struct {
+		At   int64
+		Resp gin.H
+	}{}
+	requestWindow int64 = 600
 )
 
 func parseControlClients() map[string]controlClient {
@@ -57,10 +64,11 @@ func handleControlBootstrap(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
 		"protocol": "rxui-control-v1",
 		"auth": gin.H{
-			"type":      "ed25519-signature",
-			"headers":   []string{"X-Rxui-Client", "X-Rxui-Timestamp", "X-Rxui-Nonce", "X-Rxui-Signature"},
-			"signText":  "METHOD\\nPATH\\nTIMESTAMP\\nNONCE\\nSHA256_HEX(BODY)",
-			"windowSec": nonceWindow,
+			"type":           "ed25519-signature",
+			"headers":        []string{"X-Rxui-Client", "X-Rxui-Timestamp", "X-Rxui-Nonce", "X-Rxui-Signature"},
+			"signText":       "METHOD\\nPATH\\nTIMESTAMP\\nNONCE\\nSHA256_HEX(BODY)",
+			"windowSec":      nonceWindow,
+			"idempotencySec": requestWindow,
 		},
 		"endpoints": gin.H{
 			"bootstrap": "/api/v1/control/bootstrap",
@@ -72,6 +80,21 @@ func handleControlBootstrap(c *gin.Context) {
 			"query": gin.H{"requestId": "req-1", "action": "xray.status", "params": gin.H{}},
 			"exec":  gin.H{"requestId": "req-2", "action": "xray.restart", "params": gin.H{}},
 		},
+		"errorCodes": gin.H{
+			"INVALID_JSON":              "请求体不是合法 JSON",
+			"MISSING_ACTION":            "缺少 action 字段",
+			"UNSUPPORTED_ACTION":        "不支持的 action",
+			"QUERY_ONLY_ACTION":         "该 action 仅允许 query",
+			"EXEC_ONLY_ACTION":          "该 action 仅允许 exec",
+			"INVALID_PARAMS":            "参数缺失或格式错误",
+			"NOT_FOUND":                 "目标资源不存在",
+			"XRAY_ACTION_FAILED":        "Xray 启停失败",
+			"XRAY_APPLY_FAILED":         "配置应用到 Xray 失败",
+			"missing_signature_headers": "鉴权请求头缺失",
+			"timestamp_out_of_window":   "时间戳超出允许窗口",
+			"nonce_replayed":            "nonce 重放",
+			"signature_verify_failed":   "签名校验失败",
+		},
 	}})
 }
 
@@ -82,6 +105,23 @@ func handleControlListClients(c *gin.Context) {
 		arr = append(arr, v)
 	}
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": arr})
+}
+
+func handleControlAuditList(c *gin.Context) {
+	limit := 50
+	if v := intFromAny(c.Query("limit")); v > 0 && v <= 500 {
+		limit = v
+	}
+	var logs []model.ControlAuditLog
+	q := db.Order("id desc").Limit(limit)
+	if clientID := strings.TrimSpace(c.Query("clientId")); clientID != "" {
+		q = q.Where("client_id = ?", clientID)
+	}
+	if action := strings.TrimSpace(c.Query("action")); action != "" {
+		q = q.Where("action = ?", action)
+	}
+	q.Find(&logs)
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": logs})
 }
 
 func handleControlUpsertClient(c *gin.Context) {
@@ -186,6 +226,12 @@ func handleControlQuery(c *gin.Context) {
 		c.JSON(400, resp)
 		return
 	}
+	if cached, hit := loadCachedResponse(clientID, c.FullPath(), req.RequestID); hit {
+		auditControl(clientID, c.FullPath(), req.Action, true, true, "", "", req.RequestID, bodyHash, time.Since(started))
+		c.JSON(200, cached)
+		return
+	}
+
 	resp := executeAction(req, true)
 	resp["clientId"] = clientID
 	if req.RequestID != "" {
@@ -193,6 +239,7 @@ func handleControlQuery(c *gin.Context) {
 	}
 	success, code, msg := parseRespStatus(resp)
 	auditControl(clientID, c.FullPath(), req.Action, true, success, code, msg, req.RequestID, bodyHash, time.Since(started))
+	storeCachedResponse(clientID, c.FullPath(), req.RequestID, resp)
 	c.JSON(200, resp)
 }
 
@@ -212,6 +259,12 @@ func handleControlExec(c *gin.Context) {
 		c.JSON(400, resp)
 		return
 	}
+	if cached, hit := loadCachedResponse(clientID, c.FullPath(), req.RequestID); hit {
+		auditControl(clientID, c.FullPath(), req.Action, false, true, "", "", req.RequestID, bodyHash, time.Since(started))
+		c.JSON(200, cached)
+		return
+	}
+
 	resp := executeAction(req, false)
 	resp["clientId"] = clientID
 	if req.RequestID != "" {
@@ -219,6 +272,7 @@ func handleControlExec(c *gin.Context) {
 	}
 	success, code, msg := parseRespStatus(resp)
 	auditControl(clientID, c.FullPath(), req.Action, false, success, code, msg, req.RequestID, bodyHash, time.Since(started))
+	storeCachedResponse(clientID, c.FullPath(), req.RequestID, resp)
 	c.JSON(200, resp)
 }
 
@@ -523,6 +577,51 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 	}
 
 	return out
+}
+
+func cloneResp(resp gin.H) gin.H {
+	b, _ := json.Marshal(resp)
+	var out gin.H
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+func idempotencyKey(clientID, path, requestID string) string {
+	return clientID + "|" + path + "|" + strings.TrimSpace(requestID)
+}
+
+func loadCachedResponse(clientID, path, requestID string) (gin.H, bool) {
+	if strings.TrimSpace(requestID) == "" {
+		return nil, false
+	}
+	now := time.Now().Unix()
+	requestMu.Lock()
+	defer requestMu.Unlock()
+	for k, v := range requestSeen {
+		if now-v.At > requestWindow {
+			delete(requestSeen, k)
+		}
+	}
+	k := idempotencyKey(clientID, path, requestID)
+	v, ok := requestSeen[k]
+	if !ok {
+		return nil, false
+	}
+	resp := cloneResp(v.Resp)
+	resp["idempotencyHit"] = true
+	return resp, true
+}
+
+func storeCachedResponse(clientID, path, requestID string, resp gin.H) {
+	if strings.TrimSpace(requestID) == "" {
+		return
+	}
+	requestMu.Lock()
+	requestSeen[idempotencyKey(clientID, path, requestID)] = struct {
+		At   int64
+		Resp gin.H
+	}{At: time.Now().Unix(), Resp: cloneResp(resp)}
+	requestMu.Unlock()
 }
 
 func parseRespStatus(resp gin.H) (bool, string, string) {
