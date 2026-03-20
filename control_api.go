@@ -19,8 +19,9 @@ import (
 )
 
 type actionReq struct {
-	Action string                 `json:"action"`
-	Params map[string]interface{} `json:"params"`
+	RequestID string                 `json:"requestId"`
+	Action    string                 `json:"action"`
+	Params    map[string]interface{} `json:"params"`
 }
 
 type controlClient struct {
@@ -67,6 +68,10 @@ func handleControlBootstrap(c *gin.Context) {
 			"exec":      "/api/v1/control/exec",
 		},
 		"capabilities": controlCapabilities(),
+		"examples": gin.H{
+			"query": gin.H{"requestId": "req-1", "action": "xray.status", "params": gin.H{}},
+			"exec":  gin.H{"requestId": "req-2", "action": "xray.restart", "params": gin.H{}},
+		},
 	}})
 }
 
@@ -110,38 +115,38 @@ func handleControlDeleteClient(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 
-func verifyControlSignature(c *gin.Context) (string, bool, string) {
+func verifyControlSignature(c *gin.Context) (string, string, bool, string) {
 	clientID := strings.TrimSpace(c.GetHeader("X-Rxui-Client"))
 	tsStr := strings.TrimSpace(c.GetHeader("X-Rxui-Timestamp"))
 	nonce := strings.TrimSpace(c.GetHeader("X-Rxui-Nonce"))
 	sigB64 := strings.TrimSpace(c.GetHeader("X-Rxui-Signature"))
 	if clientID == "" || tsStr == "" || nonce == "" || sigB64 == "" {
-		return "", false, "missing_signature_headers"
+		return "", "", false, "missing_signature_headers"
 	}
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
-		return "", false, "invalid_timestamp"
+		return "", "", false, "invalid_timestamp"
 	}
 	now := time.Now().Unix()
 	if ts < now-nonceWindow || ts > now+nonceWindow {
-		return "", false, "timestamp_out_of_window"
+		return "", "", false, "timestamp_out_of_window"
 	}
 
 	m := parseControlClients()
 	cc, ok := m[clientID]
 	if !ok || !cc.Enabled {
-		return "", false, "client_not_allowed"
+		return "", "", false, "client_not_allowed"
 	}
 	pub, err := decodePubKey(cc.PublicKey)
 	if err != nil {
-		return "", false, "invalid_client_pubkey"
+		return "", "", false, "invalid_client_pubkey"
 	}
 
 	nonceKey := clientID + ":" + nonce
 	nonceMu.Lock()
 	if _, exists := seenNonces[nonceKey]; exists {
 		nonceMu.Unlock()
-		return "", false, "nonce_replayed"
+		return "", "", false, "nonce_replayed"
 	}
 	seenNonces[nonceKey] = now
 	for k, t := range seenNonces {
@@ -157,43 +162,63 @@ func verifyControlSignature(c *gin.Context) (string, bool, string) {
 	signText := strings.Join([]string{c.Request.Method, c.FullPath(), tsStr, nonce, hex.EncodeToString(h[:])}, "\n")
 	sig, err := base64.StdEncoding.DecodeString(sigB64)
 	if err != nil {
-		return "", false, "invalid_signature_encoding"
+		return "", "", false, "invalid_signature_encoding"
 	}
 	if !ed25519.Verify(pub, []byte(signText), sig) {
-		return "", false, "signature_verify_failed"
+		return "", "", false, "signature_verify_failed"
 	}
-	return clientID, true, ""
+	return clientID, hex.EncodeToString(h[:]), true, ""
 }
 
 func handleControlQuery(c *gin.Context) {
-	clientID, ok, reason := verifyControlSignature(c)
+	started := time.Now()
+	clientID, bodyHash, ok, reason := verifyControlSignature(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": gin.H{"code": reason}})
+		resp := gin.H{"ok": false, "error": gin.H{"code": reason}}
+		auditControl(clientID, c.FullPath(), "", true, false, reason, "", "", bodyHash, time.Since(started))
+		c.JSON(http.StatusUnauthorized, resp)
 		return
 	}
 	var req actionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"ok": false, "error": gin.H{"code": "INVALID_JSON"}})
+		resp := gin.H{"ok": false, "error": gin.H{"code": "INVALID_JSON"}}
+		auditControl(clientID, c.FullPath(), "", true, false, "INVALID_JSON", err.Error(), "", bodyHash, time.Since(started))
+		c.JSON(400, resp)
 		return
 	}
 	resp := executeAction(req, true)
 	resp["clientId"] = clientID
+	if req.RequestID != "" {
+		resp["requestId"] = req.RequestID
+	}
+	success, code, msg := parseRespStatus(resp)
+	auditControl(clientID, c.FullPath(), req.Action, true, success, code, msg, req.RequestID, bodyHash, time.Since(started))
 	c.JSON(200, resp)
 }
 
 func handleControlExec(c *gin.Context) {
-	clientID, ok, reason := verifyControlSignature(c)
+	started := time.Now()
+	clientID, bodyHash, ok, reason := verifyControlSignature(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": gin.H{"code": reason}})
+		resp := gin.H{"ok": false, "error": gin.H{"code": reason}}
+		auditControl(clientID, c.FullPath(), "", false, false, reason, "", "", bodyHash, time.Since(started))
+		c.JSON(http.StatusUnauthorized, resp)
 		return
 	}
 	var req actionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"ok": false, "error": gin.H{"code": "INVALID_JSON"}})
+		resp := gin.H{"ok": false, "error": gin.H{"code": "INVALID_JSON"}}
+		auditControl(clientID, c.FullPath(), "", false, false, "INVALID_JSON", err.Error(), "", bodyHash, time.Since(started))
+		c.JSON(400, resp)
 		return
 	}
 	resp := executeAction(req, false)
 	resp["clientId"] = clientID
+	if req.RequestID != "" {
+		resp["requestId"] = req.RequestID
+	}
+	success, code, msg := parseRespStatus(resp)
+	auditControl(clientID, c.FullPath(), req.Action, false, success, code, msg, req.RequestID, bodyHash, time.Since(started))
 	c.JSON(200, resp)
 }
 
@@ -498,6 +523,37 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 	}
 
 	return out
+}
+
+func parseRespStatus(resp gin.H) (bool, string, string) {
+	okVal, _ := resp["ok"].(bool)
+	if okVal {
+		return true, "", ""
+	}
+	errMap, _ := resp["error"].(gin.H)
+	if errMap == nil {
+		if m, ok := resp["error"].(map[string]interface{}); ok {
+			errMap = gin.H(m)
+		}
+	}
+	code, _ := errMap["code"].(string)
+	msg, _ := errMap["message"].(string)
+	return false, code, msg
+}
+
+func auditControl(clientID, path, action string, queryOnly, success bool, errCode, errMsg, requestID, bodyHash string, d time.Duration) {
+	_ = db.Create(&model.ControlAuditLog{
+		ClientID:   clientID,
+		Path:       path,
+		Action:     action,
+		QueryOnly:  queryOnly,
+		Success:    success,
+		ErrorCode:  errCode,
+		ErrorMsg:   errMsg,
+		RequestID:  requestID,
+		BodySHA256: bodyHash,
+		DurationMs: d.Milliseconds(),
+	}).Error
 }
 
 func decodePubKey(s string) (ed25519.PublicKey, error) {

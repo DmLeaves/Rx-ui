@@ -48,7 +48,7 @@ func initDatabase() {
 	}
 
 	// 自动迁移
-	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{}, &model.Setting{})
+	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{}, &model.Setting{}, &model.ControlAuditLog{})
 
 	// 创建默认用户（如果不存在）
 	var count int64
