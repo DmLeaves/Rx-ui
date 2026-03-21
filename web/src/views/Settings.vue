@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NSwitch, NAlert, useMessage } from 'naive-ui'
+import { ref, onMounted, computed, h } from 'vue'
+import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NSwitch, NAlert, NDataTable, useMessage } from 'naive-ui'
 import { settingsApi, type Settings } from '@/api/settings'
+import { controlApi, type ControlClient, type GenerateClientResp } from '@/api/control'
 
 const message = useMessage()
 const loading = ref(false)
@@ -18,6 +19,14 @@ const settings = ref<Settings>({
   acmeDnsApiToken: '',
   acmeEnabled: 'false'
 })
+
+const clients = ref<ControlClient[]>([])
+const generating = ref(false)
+const generated = ref<GenerateClientResp | null>(null)
+const aiRemark = ref('')
+
+const skillLink = computed(() => controlApi.skillUrl())
+const discoveryLink = computed(() => `${window.location.origin}/api/v1/control/discovery`)
 
 const timezoneOptions = [
   { label: 'Asia/Shanghai (中国)', value: 'Asia/Shanghai' },
@@ -54,8 +63,70 @@ async function saveSettings() {
   }
 }
 
+async function fetchClients() {
+  try {
+    const res = await controlApi.listClients()
+    clients.value = res.data.data || []
+  } catch (error: any) {
+    message.error(error.message || '获取 AI 接入客户端失败')
+  }
+}
+
+async function generateAccessInfo() {
+  generating.value = true
+  try {
+    const res = await controlApi.generateClient(aiRemark.value)
+    generated.value = res.data.data
+    message.success('已生成接入信息（私钥仅显示一次）')
+    await fetchClients()
+  } catch (error: any) {
+    message.error(error.message || '生成失败')
+  } finally {
+    generating.value = false
+  }
+}
+
+async function removeClient(id: string) {
+  try {
+    await controlApi.deleteClient(id)
+    message.success('已删除客户端')
+    await fetchClients()
+  } catch (error: any) {
+    message.error(error.message || '删除失败')
+  }
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制')
+  } catch {
+    message.error('复制失败')
+  }
+}
+
+const columns = [
+  { title: 'Client ID', key: 'clientId' },
+  { title: '备注', key: 'remark' },
+  { title: '启用', key: 'enabled', render: (row: ControlClient) => (row.enabled ? '是' : '否') },
+  { title: '公钥', key: 'publicKey', render: (row: ControlClient) => row.publicKey?.slice(0, 20) + '...' },
+  {
+    title: '操作',
+    key: 'actions',
+    render: (row: ControlClient) => {
+      return h(NSpace, { size: 8 }, {
+        default: () => [
+          h(NButton, { size: 'small', onClick: () => copyText(row.clientId) }, { default: () => '复制ID' }),
+          h(NButton, { size: 'small', type: 'error', onClick: () => removeClient(row.clientId) }, { default: () => '删除' })
+        ]
+      })
+    }
+  }
+]
+
 onMounted(() => {
   fetchSettings()
+  fetchClients()
 })
 </script>
 
@@ -118,6 +189,38 @@ onMounted(() => {
           <n-select v-model:value="settings.timeZone" :options="timezoneOptions" style="width: 300px;" />
         </n-form-item>
       </n-form>
+    </n-card>
+
+    <n-card title="AI 接入信息（给人复制给 AI）" style="margin-top: 16px;">
+      <n-alert type="info" style="margin-bottom: 12px;">
+        一键生成后会返回 clientId + 私钥（仅显示一次），AI 通过 discovery/manifest/errors 自探索能力，避免版本漂移。
+      </n-alert>
+      <n-space vertical>
+        <n-form label-placement="left" label-width="100">
+          <n-form-item label="备注">
+            <n-input v-model:value="aiRemark" placeholder="例如：openclaw-main-agent" style="max-width: 360px;" />
+          </n-form-item>
+        </n-form>
+        <n-space>
+          <n-button type="primary" :loading="generating" @click="generateAccessInfo">一键生成接入信息</n-button>
+          <n-button @click="copyText(skillLink)">复制 Skill 链接</n-button>
+          <n-button @click="copyText(discoveryLink)">复制 Discovery 链接</n-button>
+        </n-space>
+
+        <n-alert v-if="generated" type="warning">
+          <div><b>Client ID:</b> {{ generated.clientId }}</div>
+          <div><b>Private Key(Base64):</b> {{ generated.privateKey }}</div>
+          <div><b>Skill URL:</b> {{ generated.skillUrl }}</div>
+          <div style="margin-top: 8px;">⚠️ 私钥只会显示这一次，请马上保存。</div>
+          <n-space style="margin-top: 8px;">
+            <n-button size="small" @click="copyText(generated.clientId)">复制 Client ID</n-button>
+            <n-button size="small" @click="copyText(generated.privateKey)">复制 Private Key</n-button>
+            <n-button size="small" @click="copyText(generated.skillUrl)">复制 Skill URL</n-button>
+          </n-space>
+        </n-alert>
+
+        <n-data-table :columns="columns" :data="clients" :pagination="false" />
+      </n-space>
     </n-card>
 
     <n-space style="margin-top: 24px;">

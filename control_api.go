@@ -2,12 +2,14 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -29,6 +31,10 @@ type controlClient struct {
 	PublicKey string `json:"publicKey"`
 	Enabled   bool   `json:"enabled"`
 	Remark    string `json:"remark"`
+}
+
+type generateClientReq struct {
+	Remark string `json:"remark"`
 }
 
 var (
@@ -130,6 +136,66 @@ func handleControlManifest(c *gin.Context) {
 
 func handleControlErrors(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": controlErrorCodes()})
+}
+
+func handleControlGenerateClient(c *gin.Context) {
+	var req generateClientReq
+	_ = c.ShouldBindJSON(&req)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "生成密钥失败: " + err.Error()})
+		return
+	}
+	clientID := fmt.Sprintf("ai-%d", time.Now().Unix())
+	cc := controlClient{
+		ClientID:  clientID,
+		PublicKey: base64.StdEncoding.EncodeToString(pub),
+		Enabled:   true,
+		Remark:    strings.TrimSpace(req.Remark),
+	}
+	if cc.Remark == "" {
+		cc.Remark = "generated"
+	}
+	m := parseControlClients()
+	m[clientID] = cc
+	saveControlClients(m)
+
+	basePath := strings.TrimRight(strings.TrimSpace(settings["webBasePath"]), "/")
+	if basePath == "" {
+		basePath = ""
+	}
+	skillURL := basePath + "/api/v1/control/skill"
+	if !strings.HasPrefix(skillURL, "/") {
+		skillURL = "/" + skillURL
+	}
+
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
+		"clientId":   clientID,
+		"publicKey":  cc.PublicKey,
+		"privateKey": base64.StdEncoding.EncodeToString(priv),
+		"skillUrl":   skillURL,
+		"hint":       "私钥只在此返回一次，请立即保存。",
+	}})
+}
+
+func handleControlSkill(c *gin.Context) {
+	path := "skills/rxui-control-discovery/SKILL.md"
+	if b, err := os.ReadFile(path); err == nil {
+		c.Data(200, "text/markdown; charset=utf-8", b)
+		return
+	}
+	fallback := `---
+name: rxui-control-discovery
+description: Use runtime discovery endpoints instead of hardcoded action assumptions.
+---
+
+1. GET /api/v1/control/bootstrap
+2. GET /api/v1/control/discovery
+3. GET /api/v1/control/manifest
+4. GET /api/v1/control/errors
+5. Then call POST /api/v1/control/query or /exec with required ed25519 signature headers.
+`
+	c.Data(200, "text/markdown; charset=utf-8", []byte(fallback))
 }
 
 func handleControlListClients(c *gin.Context) {

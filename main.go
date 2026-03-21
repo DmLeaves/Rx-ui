@@ -195,10 +195,12 @@ func main() {
 			control.GET("/discovery", handleControlDiscovery)
 			control.GET("/manifest", handleControlManifest)
 			control.GET("/errors", handleControlErrors)
+			control.GET("/skill", handleControlSkill)
 			control.POST("/query", handleControlQuery)
 			control.POST("/exec", handleControlExec)
 			control.GET("/clients", handleControlListClients)
 			control.POST("/clients", handleControlUpsertClient)
+			control.POST("/clients/generate", handleControlGenerateClient)
 			control.DELETE("/clients/:id", handleControlDeleteClient)
 			control.GET("/audit", handleControlAuditList)
 		}
