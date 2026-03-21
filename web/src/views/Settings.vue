@@ -3,6 +3,7 @@ import { ref, onMounted, computed, h } from 'vue'
 import { NCard, NForm, NFormItem, NInput, NButton, NSpace, NSelect, NSwitch, NAlert, NDataTable, useMessage } from 'naive-ui'
 import { settingsApi, type Settings } from '@/api/settings'
 import { controlApi, type ControlClient, type GenerateClientResp } from '@/api/control'
+import { copyTextSmart } from '@/utils/clipboard'
 
 const message = useMessage()
 const loading = ref(false)
@@ -97,11 +98,15 @@ async function removeClient(id: string) {
 }
 
 async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text)
+  const result = await copyTextSmart(text)
+  if (result.ok) {
     message.success('已复制')
-  } catch {
-    message.error('复制失败')
+    return
+  }
+  if (result.method === 'manual') {
+    message.warning('自动复制失败，已弹出手动复制框')
+  } else {
+    message.error(`复制失败: ${result.reason || 'unknown'}`)
   }
 }
 
