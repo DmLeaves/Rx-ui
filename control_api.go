@@ -70,32 +70,66 @@ func handleControlBootstrap(c *gin.Context) {
 			"windowSec":      nonceWindow,
 			"idempotencySec": requestWindow,
 		},
-		"endpoints": gin.H{
-			"bootstrap": "/api/v1/control/bootstrap",
+		"entrypoints": gin.H{
+			"discovery": "/api/v1/control/discovery",
+			"manifest":  "/api/v1/control/manifest",
+			"errors":    "/api/v1/control/errors",
 			"query":     "/api/v1/control/query",
 			"exec":      "/api/v1/control/exec",
+			"audit":     "/api/v1/control/audit",
 		},
-		"capabilities": controlCapabilities(),
+		"usage": []string{
+			"先调用 /api/v1/control/discovery 获取可用入口与运行端口信息",
+			"再调用 /api/v1/control/manifest 获取 action、参数格式与模式(query/exec)",
+			"遇到错误码时查询 /api/v1/control/errors 解释与建议处理方式",
+		},
 		"examples": gin.H{
 			"query": gin.H{"requestId": "req-1", "action": "xray.status", "params": gin.H{}},
 			"exec":  gin.H{"requestId": "req-2", "action": "xray.restart", "params": gin.H{}},
 		},
-		"errorCodes": gin.H{
-			"INVALID_JSON":              "请求体不是合法 JSON",
-			"MISSING_ACTION":            "缺少 action 字段",
-			"UNSUPPORTED_ACTION":        "不支持的 action",
-			"QUERY_ONLY_ACTION":         "该 action 仅允许 query",
-			"EXEC_ONLY_ACTION":          "该 action 仅允许 exec",
-			"INVALID_PARAMS":            "参数缺失或格式错误",
-			"NOT_FOUND":                 "目标资源不存在",
-			"XRAY_ACTION_FAILED":        "Xray 启停失败",
-			"XRAY_APPLY_FAILED":         "配置应用到 Xray 失败",
-			"missing_signature_headers": "鉴权请求头缺失",
-			"timestamp_out_of_window":   "时间戳超出允许窗口",
-			"nonce_replayed":            "nonce 重放",
-			"signature_verify_failed":   "签名校验失败",
+	}})
+}
+
+func handleControlDiscovery(c *gin.Context) {
+	port := strings.TrimSpace(settings["webPort"])
+	if port == "" {
+		port = "54321"
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
+		"service": gin.H{
+			"name":    "rx-ui",
+			"webPort": port,
+		},
+		"catalog": gin.H{
+			"bootstrap": "/api/v1/control/bootstrap",
+			"manifest":  "/api/v1/control/manifest",
+			"errors":    "/api/v1/control/errors",
+			"query":     "/api/v1/control/query",
+			"exec":      "/api/v1/control/exec",
+			"audit":     "/api/v1/control/audit",
+			"health":    "/api/v1/health",
+			"settings":  "/api/v1/settings",
+			"system":    "/api/v1/system/status",
 		},
 	}})
+}
+
+func handleControlManifest(c *gin.Context) {
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
+		"protocol":      "rxui-control-v1",
+		"requestSchema": gin.H{"requestId": "string(optional)", "action": "string(required)", "params": "object(required)"},
+		"actions":       controlActionSpecs(),
+		"queryActions":  controlCapabilities()["query"],
+		"execActions":   controlCapabilities()["exec"],
+		"notes": []string{
+			"manifest 仅描述当前版本服务端支持的动作，以运行中服务为准",
+			"不要依赖仓库静态文档推断能力；每次会话优先先读 manifest",
+		},
+	}})
+}
+
+func handleControlErrors(c *gin.Context) {
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": controlErrorCodes()})
 }
 
 func handleControlListClients(c *gin.Context) {
@@ -280,6 +314,49 @@ func controlCapabilities() gin.H {
 	return gin.H{
 		"query": []string{"xray.status", "sys.status", "inbound.list", "inbound.get", "client.list", "client.get", "cert.list", "cert.get", "logs.tail"},
 		"exec":  []string{"xray.start", "xray.stop", "xray.restart", "inbound.create", "inbound.update", "inbound.delete", "client.create", "client.update", "client.delete", "cert.create", "cert.update", "cert.delete", "cert.renew", "net.ping"},
+	}
+}
+
+func controlActionSpecs() []gin.H {
+	return []gin.H{
+		{"action": "xray.status", "mode": "query", "summary": "查询 Xray 运行状态", "params": gin.H{}},
+		{"action": "sys.status", "mode": "query", "summary": "查询系统汇总状态", "params": gin.H{}},
+		{"action": "inbound.list", "mode": "query", "summary": "列出入站", "params": gin.H{}},
+		{"action": "inbound.get", "mode": "query", "summary": "获取单个入站", "params": gin.H{"id": "number(optional)", "tag": "string(optional)"}},
+		{"action": "client.list", "mode": "query", "summary": "列出客户端", "params": gin.H{"inboundId": "number(optional)"}},
+		{"action": "client.get", "mode": "query", "summary": "获取单个客户端", "params": gin.H{"id": "number(required)"}},
+		{"action": "cert.list", "mode": "query", "summary": "列出证书", "params": gin.H{}},
+		{"action": "cert.get", "mode": "query", "summary": "获取单个证书", "params": gin.H{"id": "number(optional)", "domain": "string(optional)"}},
+		{"action": "logs.tail", "mode": "query", "summary": "读取面板日志", "params": gin.H{"lines": "number(optional,1-500)"}},
+		{"action": "xray.start|stop|restart", "mode": "exec", "summary": "控制 Xray 进程", "params": gin.H{}},
+		{"action": "inbound.create|update|delete", "mode": "exec", "summary": "入站增改删", "params": gin.H{"id": "number(update/delete required)"}},
+		{"action": "client.create|update|delete", "mode": "exec", "summary": "客户端增改删", "params": gin.H{"id": "number(update/delete required)", "inboundId": "number(create required)"}},
+		{"action": "cert.create|update|delete|renew", "mode": "exec", "summary": "证书管理", "params": gin.H{"id": "number(update/delete/renew required)", "domain": "string(create required)"}},
+		{"action": "net.ping", "mode": "exec", "summary": "网络探测", "params": gin.H{"target": "string(required)"}},
+	}
+}
+
+func controlErrorCodes() gin.H {
+	return gin.H{
+		"INVALID_JSON":               "请求体不是合法 JSON",
+		"MISSING_ACTION":             "缺少 action 字段",
+		"UNSUPPORTED_ACTION":         "不支持的 action",
+		"QUERY_ONLY_ACTION":          "该 action 仅允许 query",
+		"EXEC_ONLY_ACTION":           "该 action 仅允许 exec",
+		"INVALID_PARAMS":             "参数缺失或格式错误",
+		"NOT_FOUND":                  "目标资源不存在",
+		"XRAY_ACTION_FAILED":         "Xray 启停失败",
+		"XRAY_APPLY_FAILED":          "配置应用到 Xray 失败",
+		"LOG_READ_FAILED":            "读取日志失败",
+		"PING_FAILED":                "网络探测失败",
+		"missing_signature_headers":  "鉴权请求头缺失",
+		"invalid_timestamp":          "时间戳格式错误",
+		"timestamp_out_of_window":    "时间戳超出允许窗口",
+		"client_not_allowed":         "控制客户端未注册或被禁用",
+		"invalid_client_pubkey":      "客户端公钥配置无效",
+		"nonce_replayed":             "nonce 重放",
+		"invalid_signature_encoding": "签名编码无效",
+		"signature_verify_failed":    "签名校验失败",
 	}
 }
 

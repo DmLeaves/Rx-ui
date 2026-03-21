@@ -192,6 +192,9 @@ func main() {
 		control := api.Group("/control")
 		{
 			control.GET("/bootstrap", handleControlBootstrap)
+			control.GET("/discovery", handleControlDiscovery)
+			control.GET("/manifest", handleControlManifest)
+			control.GET("/errors", handleControlErrors)
 			control.POST("/query", handleControlQuery)
 			control.POST("/exec", handleControlExec)
 			control.GET("/clients", handleControlListClients)
