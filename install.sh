@@ -35,7 +35,7 @@ else
   echo -e "${green}下载 Rx-ui ${TAG} (${arch})...${plain}"
 fi
 
-wget -O rx-ui-linux-${arch}.tar.gz "${ASSET_URL}"
+wget -4 -O rx-ui-linux-${arch}.tar.gz "${ASSET_URL}"
 
 # 升级时保留数据
 if [[ -d "${APP_DIR}" ]]; then
@@ -76,8 +76,8 @@ echo "$INSTALL_VERSION" > "${APP_DIR}/VERSION"
 SCRIPT_REF="$INSTALL_VERSION"
 [[ "$SCRIPT_REF" == "latest" ]] && SCRIPT_REF="main"
 
-wget -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/rx-ui.service"
-wget -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/Rx-ui.sh"
+wget -4 -O /etc/systemd/system/${SERVICE_NAME}.service "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/rx-ui.service"
+wget -4 -O /usr/bin/Rx-ui "https://raw.githubusercontent.com/${REPO}/${SCRIPT_REF}/Rx-ui.sh"
 chmod +x /usr/bin/Rx-ui
 ln -sf /usr/bin/Rx-ui /usr/bin/rx-ui
 
