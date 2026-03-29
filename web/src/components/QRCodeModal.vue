@@ -47,6 +47,11 @@ async function copyLink() {
   }
 }
 
+function selectInputText(event: Event) {
+  const input = event.target as HTMLInputElement
+  input.select()
+}
+
 function handleClose() {
   emit('update:show', false)
 }
@@ -74,7 +79,7 @@ onMounted(() => {
   >
     <n-space vertical align="center">
       <canvas ref="canvasRef"></canvas>
-      <n-input :value="link" readonly style="width: 100%;">
+      <n-input :value="link" readonly style="width: 100%;" @focus="selectInputText">
         <template #suffix>
           <n-button text @click="copyLink">复制</n-button>
         </template>
