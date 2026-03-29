@@ -160,14 +160,31 @@ func handleControlGenerateClient(c *gin.Context) {
 	m[clientID] = cc
 	saveControlClients(m)
 
+	// 构建完整 URL（协议 + 主机 + 端口 + 路径）
+	host := c.Request.Host
+	if host == "" {
+		// 回退到配置的端口
+		port := strings.TrimSpace(settings["webPort"])
+		if port == "" {
+			port = "54321"
+		}
+		host = "127.0.0.1:" + port
+	}
+	// 判断是否 HTTPS（如果请求是 HTTPS 或面板配置了证书）
+	scheme := "http"
+	if c.Request.TLS != nil || (settings["webCertFile"] != "" && settings["webKeyFile"] != "") {
+		scheme = "https"
+	}
+	
 	basePath := strings.TrimRight(strings.TrimSpace(settings["webBasePath"]), "/")
 	if basePath == "" {
 		basePath = ""
 	}
-	skillURL := basePath + "/api/v1/control/skill"
-	if !strings.HasPrefix(skillURL, "/") {
-		skillURL = "/" + skillURL
+	skillPath := basePath + "/api/v1/control/skill"
+	if !strings.HasPrefix(skillPath, "/") {
+		skillPath = "/" + skillPath
 	}
+	skillURL := fmt.Sprintf("%s://%s%s", scheme, host, skillPath)
 
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
 		"clientId":   clientID,
