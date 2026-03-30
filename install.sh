@@ -30,6 +30,13 @@ setup_swap() {
   
   # 内存 < 512MB 且没有 swap
   if [[ $mem_mb -lt 512 ]] && [[ $swap_kb -eq 0 ]]; then
+    # 检测容器环境（OpenVZ/LXC 不支持 swap）
+    if [[ -f /proc/user_beancounters ]] || grep -q "container=lxc" /proc/1/environ 2>/dev/null || \
+       grep -q "docker\|lxc\|kubepods" /proc/1/cgroup 2>/dev/null; then
+      echo -e "${yellow}检测到容器环境，跳过 swap 创建（容器通常不支持 swap）${plain}"
+      return
+    fi
+    
     echo -e "${yellow}检测到小内存 (${mem_mb}MB) 且无 swap，正在创建 256MB swap...${plain}"
     
     local swapfile="/swapfile"
@@ -43,7 +50,13 @@ setup_swap() {
     dd if=/dev/zero of="$swapfile" bs=1M count=256
     chmod 600 "$swapfile"
     mkswap "$swapfile"
-    swapon "$swapfile"
+    
+    # swapon 可能因权限/虚拟化限制失败
+    if ! swapon "$swapfile" 2>/dev/null; then
+      echo -e "${yellow}swap 启用失败（可能是虚拟化限制），已跳过${plain}"
+      rm -f "$swapfile"
+      return
+    fi
     
     # 写入 fstab 持久化
     if ! grep -q "$swapfile" /etc/fstab; then
