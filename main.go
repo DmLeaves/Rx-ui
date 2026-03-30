@@ -203,6 +203,7 @@ func main() {
 			control.POST("/clients/generate", handleControlGenerateClient)
 			control.DELETE("/clients/:id", handleControlDeleteClient)
 			control.GET("/clients/:id/export", handleControlExportClient)
+			control.GET("/client-link", handleControlGetClientLink)
 			control.GET("/audit", handleControlAuditList)
 		}
 

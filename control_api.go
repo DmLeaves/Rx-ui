@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -918,4 +919,198 @@ func strFromAny(v interface{}) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprintf("%v", v))
+}
+
+func handleControlGetClientLink(c *gin.Context) {
+	inboundIdStr := strings.TrimSpace(c.Query("inboundId"))
+	clientIdStr := strings.TrimSpace(c.Query("clientId"))
+	
+	if inboundIdStr == "" || clientIdStr == "" {
+		c.JSON(400, gin.H{"code": 1, "message": "需要 inboundId 和 clientId 参数"})
+		return
+	}
+	
+	inboundId, err := strconv.Atoi(inboundIdStr)
+	if err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "inboundId 必须是数字"})
+		return
+	}
+	
+	var inbound model.Inbound
+	if err := db.First(&inbound, inboundId).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "入站规则不存在"})
+		return
+	}
+	
+	// 查找客户端
+	var client model.Client
+	if err := db.Where("inbound_id = ? AND id = ?", inboundId, clientIdStr).First(&client).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		return
+	}
+	
+	// 解析流设置
+	var streamSettings map[string]interface{}
+	if inbound.StreamSettings != "" {
+		json.Unmarshal([]byte(inbound.StreamSettings), &streamSettings)
+	}
+	
+	// 获取主机地址（优先使用 WS Host 或 SNI）
+	host := c.Request.Host
+	if host == "" {
+		port := strings.TrimSpace(settings["webPort"])
+		if port == "" {
+			port = "54321"
+		}
+		host = "127.0.0.1:" + port
+	}
+	
+	// 提取域名部分（去掉端口）
+	domain := host
+	if idx := strings.Index(domain, ":"); idx != -1 {
+		domain = domain[:idx]
+	}
+	
+	// 尝试从流设置中获取更好的主机地址
+	var wsHost, sni string
+	if streamSettings != nil {
+		if ws, ok := streamSettings["wsSettings"].(map[string]interface{}); ok {
+			if headers, ok := ws["headers"].(map[string]interface{}); ok {
+				if h, ok := headers["Host"].(string); ok && h != "" {
+					wsHost = h
+				}
+			}
+		}
+		if tls, ok := streamSettings["tlsSettings"].(map[string]interface{}); ok {
+			if sn, ok := tls["serverName"].(string); ok && sn != "" {
+				sni = sn
+			}
+		}
+		if xtls, ok := streamSettings["xtlsSettings"].(map[string]interface{}); ok {
+			if sn, ok := xtls["serverName"].(string); ok && sn != "" {
+				sni = sn
+			}
+		}
+	}
+	
+	// 确定最终的主机地址（优先级：WS Host > SNI > 域名）
+	finalHost := domain
+	if wsHost != "" {
+		finalHost = wsHost
+	} else if sni != "" {
+		finalHost = sni
+	}
+	
+	// 生成链接（简化版，实际应该复用前端的逻辑）
+	link := ""
+	network := "tcp"
+	security := "none"
+	
+	if streamSettings != nil {
+		if net, ok := streamSettings["network"].(string); ok {
+			network = net
+		}
+		if sec, ok := streamSettings["security"].(string); ok {
+			security = sec
+		}
+	}
+	
+	switch inbound.Protocol {
+	case "vmess":
+		// 简化的 VMess 链接生成
+		config := map[string]interface{}{
+			"v":    "2",
+			"ps":   client.Remark,
+			"add":  finalHost,
+			"port": inbound.Port,
+			"id":   client.UUID,
+			"aid":  0,
+			"net":  network,
+			"type": "none",
+			"host": "",
+			"path": "",
+			"tls":  "",
+		}
+		if security == "tls" {
+			config["tls"] = "tls"
+		}
+		if network == "ws" {
+			if ws, ok := streamSettings["wsSettings"].(map[string]interface{}); ok {
+				if path, ok := ws["path"].(string); ok {
+					config["path"] = path
+				}
+				if headers, ok := ws["headers"].(map[string]interface{}); ok {
+					if h, ok := headers["Host"].(string); ok {
+						config["host"] = h
+					}
+				}
+			}
+		}
+		jsonBytes, _ := json.MarshalIndent(config, "", "  ")
+		link = "vmess://" + base64.StdEncoding.EncodeToString(jsonBytes)
+		
+	case "vless":
+		// 简化的 VLESS 链接生成
+		params := url.Values{}
+		params.Set("type", network)
+		params.Set("security", security)
+		
+		if network == "ws" {
+			if ws, ok := streamSettings["wsSettings"].(map[string]interface{}); ok {
+				if path, ok := ws["path"].(string); ok {
+					params.Set("path", path)
+				}
+				if headers, ok := ws["headers"].(map[string]interface{}); ok {
+					if h, ok := headers["Host"].(string); ok {
+						params.Set("host", h)
+					}
+				}
+			}
+		}
+		if security == "tls" || security == "xtls" {
+			if sni != "" {
+				params.Set("sni", sni)
+			}
+		}
+		query := params.Encode()
+		if query != "" {
+			query = "?" + query
+		}
+		link = fmt.Sprintf("vless://%s@%s:%d%s#%s", 
+			client.UUID, finalHost, inbound.Port, query, url.QueryEscape(client.Remark))
+			
+	case "trojan":
+		// 简化的 Trojan 链接生成
+		params := url.Values{}
+		if sni != "" {
+			params.Set("sni", sni)
+		}
+		if network != "tcp" {
+			params.Set("type", network)
+		}
+		query := params.Encode()
+		if query != "" {
+			query = "?" + query
+		}
+		link = fmt.Sprintf("trojan://%s@%s:%d%s#%s",
+			url.QueryEscape(client.Password), finalHost, inbound.Port, query, url.QueryEscape(client.Remark))
+			
+	default:
+		c.JSON(400, gin.H{"code": 1, "message": "不支持的协议: " + inbound.Protocol})
+		return
+	}
+	
+	c.JSON(200, gin.H{
+		"code":    0,
+		"message": "ok",
+		"data": gin.H{
+			"link":      link,
+			"inboundId": inbound.ID,
+			"clientId":  client.ID,
+			"protocol":  inbound.Protocol,
+			"host":      finalHost,
+			"port":      inbound.Port,
+			"remark":    client.Remark,
+		},
+	})
 }
