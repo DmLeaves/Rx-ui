@@ -202,6 +202,7 @@ func main() {
 			control.POST("/clients", handleControlUpsertClient)
 			control.POST("/clients/generate", handleControlGenerateClient)
 			control.DELETE("/clients/:id", handleControlDeleteClient)
+			control.GET("/clients/:id/export", handleControlExportClient)
 			control.GET("/audit", handleControlAuditList)
 		}
 

@@ -272,6 +272,66 @@ func handleControlDeleteClient(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 
+func handleControlExportClient(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		c.JSON(400, gin.H{"code": 1, "message": "clientId 不能为空"})
+		return
+	}
+	m := parseControlClients()
+	cc, ok := m[id]
+	if !ok {
+		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		return
+	}
+
+	host := c.Request.Host
+	if host == "" {
+		port := strings.TrimSpace(settings["webPort"])
+		if port == "" {
+			port = "54321"
+		}
+		host = "127.0.0.1:" + port
+	}
+	scheme := "http"
+	if c.Request.TLS != nil || (settings["webCertFile"] != "" && settings["webKeyFile"] != "") {
+		scheme = "https"
+	}
+	basePath := strings.TrimRight(strings.TrimSpace(settings["webBasePath"]), "/")
+	if basePath == "" {
+		basePath = ""
+	}
+	
+	config := gin.H{
+		"clientId": cc.ClientID,
+		"publicKey": cc.PublicKey,
+		"algorithm": "Ed25519",
+		"enabled": cc.Enabled,
+		"remark": cc.Remark,
+		"endpoints": gin.H{
+			"bootstrap": fmt.Sprintf("%s://%s%s/api/v1/control/bootstrap", scheme, host, basePath),
+			"discovery": fmt.Sprintf("%s://%s%s/api/v1/control/discovery", scheme, host, basePath),
+			"manifest": fmt.Sprintf("%s://%s%s/api/v1/control/manifest", scheme, host, basePath),
+			"errors": fmt.Sprintf("%s://%s%s/api/v1/control/errors", scheme, host, basePath),
+			"query": fmt.Sprintf("%s://%s%s/api/v1/control/query", scheme, host, basePath),
+			"exec": fmt.Sprintf("%s://%s%s/api/v1/control/exec", scheme, host, basePath),
+			"audit": fmt.Sprintf("%s://%s%s/api/v1/control/audit", scheme, host, basePath),
+		},
+		"headers": gin.H{
+			"X-Rxui-Client": "{{clientId}}",
+			"X-Rxui-Timestamp": "{{timestamp}}",
+			"X-Rxui-Nonce": "{{nonce}}",
+			"X-Rxui-Signature": "{{signature}}",
+		},
+		"signatureMethod": "Ed25519",
+		"signatureFormat": "Base64",
+		"timestampWindow": nonceWindow,
+		"idempotencyWindow": requestWindow,
+		"hint": "AI 可以直接导入此配置，需要提供对应的私钥才能签名请求。",
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": config})
+}
+
 func verifyControlSignature(c *gin.Context) (string, string, bool, string) {
 	clientID := strings.TrimSpace(c.GetHeader("X-Rxui-Client"))
 	tsStr := strings.TrimSpace(c.GetHeader("X-Rxui-Timestamp"))

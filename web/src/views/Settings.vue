@@ -97,6 +97,26 @@ async function removeClient(id: string) {
   }
 }
 
+async function copyAllAccessInfo() {
+  if (!generated.value) return
+  const text = `Client ID: ${generated.value.clientId}
+Private Key (Ed25519, Base64): ${generated.value.privateKey}
+Skill URL: ${generated.value.skillUrl}
+Discovery URL: ${discoveryLink.value}
+备注：私钥仅显示一次，请立即保存。`
+  
+  const result = await copyTextSmart(text)
+  if (result.ok) {
+    message.success('已复制全部接入信息')
+    return
+  }
+  if (result.method === 'manual') {
+    message.warning('自动复制失败，已弹出手动复制框')
+  } else {
+    message.error(`复制失败: ${result.reason || 'unknown'}`)
+  }
+}
+
 async function copyText(text: string) {
   const result = await copyTextSmart(text)
   if (result.ok) {
@@ -214,13 +234,11 @@ onMounted(() => {
 
         <n-alert v-if="generated" type="warning">
           <div><b>Client ID:</b> {{ generated.clientId }}</div>
-          <div><b>Private Key(Base64):</b> {{ generated.privateKey }}</div>
+          <div><b>Private Key (Ed25519, Base64):</b> {{ generated.privateKey }}</div>
           <div><b>Skill URL:</b> {{ generated.skillUrl }}</div>
           <div style="margin-top: 8px;">⚠️ 私钥只会显示这一次，请马上保存。</div>
           <n-space style="margin-top: 8px;">
-            <n-button size="small" @click="copyText(generated.clientId)">复制 Client ID</n-button>
-            <n-button size="small" @click="copyText(generated.privateKey)">复制 Private Key</n-button>
-            <n-button size="small" @click="copyText(generated.skillUrl)">复制 Skill URL</n-button>
+            <n-button size="small" type="primary" @click="copyAllAccessInfo">复制全部接入信息</n-button>
           </n-space>
         </n-alert>
 
