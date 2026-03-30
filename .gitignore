@@ -42,3 +42,4 @@ go.mod.bak
 
 # Node modules
 node_modules/
+release/
