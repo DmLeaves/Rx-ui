@@ -22,6 +22,40 @@ case "$arch" in
   *) echo -e "${red}不支持的架构: ${arch}${plain}"; exit 1 ;;
 esac
 
+# 小内存自动创建 swap
+setup_swap() {
+  local mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  local mem_mb=$((mem_kb / 1024))
+  local swap_kb=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+  
+  # 内存 < 512MB 且没有 swap
+  if [[ $mem_mb -lt 512 ]] && [[ $swap_kb -eq 0 ]]; then
+    echo -e "${yellow}检测到小内存 (${mem_mb}MB) 且无 swap，正在创建 256MB swap...${plain}"
+    
+    local swapfile="/swapfile"
+    if [[ -f "$swapfile" ]]; then
+      echo -e "${yellow}swap 文件已存在，跳过创建${plain}"
+      return
+    fi
+    
+    # 创建 swap 文件
+    dd if=/dev/zero of="$swapfile" bs=1M count=256 status=progress 2>/dev/null || \
+    dd if=/dev/zero of="$swapfile" bs=1M count=256
+    chmod 600 "$swapfile"
+    mkswap "$swapfile"
+    swapon "$swapfile"
+    
+    # 写入 fstab 持久化
+    if ! grep -q "$swapfile" /etc/fstab; then
+      echo "$swapfile none swap sw 0 0" >> /etc/fstab
+    fi
+    
+    echo -e "${green}swap 创建成功 (256MB)${plain}"
+  fi
+}
+
+setup_swap
+
 mkdir -p /usr/local
 cd /usr/local
 
