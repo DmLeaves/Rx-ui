@@ -18,6 +18,7 @@ export interface SystemStatus {
   }
   xray: {
     running: boolean
+    desired?: boolean
     version: string
   }
   panelUptime: number
@@ -26,7 +27,15 @@ export interface SystemStatus {
 
 export interface XrayStatus {
   running: boolean
+  desired?: boolean
   version: string
+}
+
+export interface XrayEvent {
+  time: string
+  level: string
+  type: string
+  message: string
 }
 
 export interface TrafficStat {
@@ -42,6 +51,10 @@ export const systemApi = {
 
   getXrayStatus() {
     return request.get<ApiResponse<XrayStatus>>('/xray/status')
+  },
+
+  getXrayEvents(limit = 100) {
+    return request.get<ApiResponse<XrayEvent[]>>(`/xray/events?limit=${limit}`)
   },
 
   startXray() {

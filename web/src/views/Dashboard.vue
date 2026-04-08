@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { NGrid, NGi, NCard, NStatistic, NButton, NSpace, NIcon, useMessage } from 'naive-ui'
 import { RefreshOutline, PlayOutline, StopOutline, ReloadOutline } from '@vicons/ionicons5'
-import { systemApi, type SystemStatus } from '@/api/system'
+import { systemApi, type SystemStatus, type XrayEvent } from '@/api/system'
 
 const message = useMessage()
 const loading = ref(false)
 const status = ref<SystemStatus | null>(null)
+const xrayEvents = ref<XrayEvent[]>([])
+let timer: number | null = null
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes === 0) return '0 B'
@@ -32,6 +34,15 @@ async function fetchStatus() {
     status.value = res.data.data
   } catch (error: any) {
     console.error('获取系统状态失败:', error)
+  }
+}
+
+async function fetchXrayEvents() {
+  try {
+    const res = await systemApi.getXrayEvents(80)
+    xrayEvents.value = res.data.data || []
+  } catch (error: any) {
+    console.error('获取 Xray 事件失败:', error)
   }
 }
 
@@ -76,6 +87,15 @@ async function restartXray() {
 
 onMounted(() => {
   fetchStatus()
+  fetchXrayEvents()
+  timer = window.setInterval(() => {
+    fetchStatus()
+    fetchXrayEvents()
+  }, 10000)
+})
+
+onBeforeUnmount(() => {
+  if (timer) window.clearInterval(timer)
 })
 </script>
 
@@ -104,11 +124,19 @@ onMounted(() => {
     </n-space>
 
     <n-grid :cols="4" :x-gap="16" :y-gap="16" v-if="status">
-      <n-gi><n-card><n-statistic label="Xray 状态"><template #default><span :style="{ color: status.xray.running ? '#18a058' : '#d03050' }">{{ status.xray.running ? '运行中' : '已停止' }}</span></template></n-statistic><p style="margin-top: 8px; color: #999; font-size: 12px;">{{ status.xray.version }}</p></n-card></n-gi>
+      <n-gi><n-card><n-statistic label="Xray 状态"><template #default><span :style="{ color: status.xray.running ? '#18a058' : '#d03050' }">{{ status.xray.running ? '运行中' : '已停止' }}</span></template></n-statistic><p style="margin-top: 8px; color: #999; font-size: 12px;">{{ status.xray.version }}</p><p style="margin-top: 4px; color: #999; font-size: 12px;">守护目标：{{ status.xray.desired === false ? '手动停止' : '保持运行' }}</p></n-card></n-gi>
       <n-gi><n-card><n-statistic label="入站规则">{{ status.inboundCount }}</n-statistic></n-card></n-gi>
       <n-gi><n-card><n-statistic label="系统运行时间">{{ formatUptime(status.uptime) }}</n-statistic></n-card></n-gi>
       <n-gi><n-card><n-statistic label="面板运行时间">{{ formatUptime(status.panelUptime) }}</n-statistic></n-card></n-gi>
       <n-gi><n-card><n-statistic label="总流量">↑ {{ formatBytes(status.traffic.up) }} / ↓ {{ formatBytes(status.traffic.down) }}</n-statistic></n-card></n-gi>
     </n-grid>
+
+    <n-card title="Xray 守护事件日志" style="margin-top: 16px;" v-if="xrayEvents.length">
+      <div style="max-height: 280px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap;">
+        <div v-for="(e, idx) in xrayEvents" :key="idx" :style="{ color: e.level === 'ERROR' ? '#d03050' : e.level === 'WARN' ? '#f0a020' : '#333' }">
+          [{{ e.time }}] [{{ e.level }}] [{{ e.type }}] {{ e.message }}
+        </div>
+      </div>
+    </n-card>
   </div>
 </template>

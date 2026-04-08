@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,7 +37,75 @@ var (
 	xrayProcess *os.Process
 	xrayRunning bool
 	startTime   = time.Now()
+
+	xrayMu             sync.Mutex
+	xrayDesiredRunning = true
+	xrayEventsMu       sync.Mutex
+	xrayEvents         = make([]XrayEvent, 0, 200)
 )
+
+type XrayEvent struct {
+	Time    string `json:"time"`
+	Level   string `json:"level"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func appendXrayEvent(level, eventType, message string) {
+	e := XrayEvent{
+		Time:    time.Now().Format("2006-01-02 15:04:05"),
+		Level:   level,
+		Type:    eventType,
+		Message: message,
+	}
+
+	xrayEventsMu.Lock()
+	xrayEvents = append(xrayEvents, e)
+	if len(xrayEvents) > 500 {
+		xrayEvents = xrayEvents[len(xrayEvents)-500:]
+	}
+	xrayEventsMu.Unlock()
+
+	_ = os.MkdirAll("./data", 0o755)
+	f, err := os.OpenFile("./data/xray-events.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, _ = f.WriteString(fmt.Sprintf("[%s] [%s] [%s] %s\n", e.Time, e.Level, e.Type, e.Message))
+		_ = f.Close()
+	}
+
+	log.Printf("[XRAY][%s][%s] %s", level, eventType, message)
+}
+
+func getXrayEvents(limit int) []XrayEvent {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	xrayEventsMu.Lock()
+	defer xrayEventsMu.Unlock()
+	n := len(xrayEvents)
+	if n <= limit {
+		out := make([]XrayEvent, n)
+		copy(out, xrayEvents)
+		return out
+	}
+	out := make([]XrayEvent, limit)
+	copy(out, xrayEvents[n-limit:])
+	return out
+}
+
+func isXrayProcessAlive() bool {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
+	if xrayProcess == nil {
+		return false
+	}
+	if err := xrayProcess.Signal(syscall.Signal(0)); err != nil {
+		xrayProcess = nil
+		xrayRunning = false
+		return false
+	}
+	return true
+}
 
 func initDatabase() {
 	// 确保数据目录存在
@@ -128,8 +198,10 @@ func main() {
 	// 启动面板时自动启动 Xray（安装后/重启后无需手动启动）
 	if err := startXray(); err != nil {
 		log.Printf("警告: Xray 自动启动失败: %v", err)
+		appendXrayEvent("ERROR", "boot-start", "面板启动时自动拉起 Xray 失败: "+err.Error())
 	} else {
 		log.Printf("Xray 已自动启动")
+		appendXrayEvent("INFO", "boot-start", "面板启动时已自动拉起 Xray")
 	}
 
 	// 设置 Gin
@@ -221,6 +293,7 @@ func main() {
 		xray := api.Group("/xray")
 		{
 			xray.GET("/status", handleXrayStatus)
+			xray.GET("/events", handleXrayEvents)
 			xray.POST("/start", handleXrayStart)
 			xray.POST("/stop", handleXrayStop)
 			xray.POST("/restart", handleXrayRestart)
@@ -245,6 +318,7 @@ func main() {
 	// 启动后台任务
 	startTrafficSyncJob()
 	startCertRenewJob()
+	startXrayWatchdog()
 	go reconcileFirewall()
 
 	// 启动服务器（优先级：PORT 环境变量 > settings.webPort > 默认 54321）
@@ -1115,9 +1189,20 @@ func handleXrayStatus(c *gin.Context) {
 		"message": "ok",
 		"data": gin.H{
 			"running": xrayRunning,
+			"desired": xrayDesiredRunning,
 			"version": version,
 		},
 	})
+}
+
+func handleXrayEvents(c *gin.Context) {
+	limit := 100
+	if q := strings.TrimSpace(c.Query("limit")); q != "" {
+		if v, err := strconv.Atoi(q); err == nil {
+			limit = v
+		}
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": getXrayEvents(limit)})
 }
 
 func handleXrayStart(c *gin.Context) {
@@ -1126,10 +1211,13 @@ func handleXrayStart(c *gin.Context) {
 		return
 	}
 
+	xrayDesiredRunning = true
 	if err := startXray(); err != nil {
+		appendXrayEvent("ERROR", "manual-start", "手动启动失败: "+err.Error())
 		c.JSON(500, gin.H{"code": 1, "message": "启动失败: " + err.Error()})
 		return
 	}
+	appendXrayEvent("INFO", "manual-start", "手动启动成功")
 
 	c.JSON(200, gin.H{"code": 0, "message": "Xray 已启动"})
 }
@@ -1140,27 +1228,44 @@ func handleXrayStop(c *gin.Context) {
 		return
 	}
 
+	xrayDesiredRunning = false
 	if err := stopXray(); err != nil {
+		appendXrayEvent("ERROR", "manual-stop", "手动停止失败: "+err.Error())
 		c.JSON(500, gin.H{"code": 1, "message": "停止失败: " + err.Error()})
 		return
 	}
+	appendXrayEvent("WARN", "manual-stop", "手动停止 Xray")
 
 	c.JSON(200, gin.H{"code": 0, "message": "Xray 已停止"})
 }
 
 func handleXrayRestart(c *gin.Context) {
+	xrayDesiredRunning = true
 	stopXray()
 	time.Sleep(1 * time.Second)
 
 	if err := startXray(); err != nil {
+		appendXrayEvent("ERROR", "manual-restart", "手动重启失败: "+err.Error())
 		c.JSON(500, gin.H{"code": 1, "message": "重启失败: " + err.Error()})
 		return
 	}
+	appendXrayEvent("INFO", "manual-restart", "手动重启成功")
 
 	c.JSON(200, gin.H{"code": 0, "message": "Xray 已重启"})
 }
 
 func startXray() error {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
+	if xrayProcess != nil {
+		if err := xrayProcess.Signal(syscall.Signal(0)); err == nil {
+			xrayRunning = true
+			return nil
+		}
+		xrayProcess = nil
+		xrayRunning = false
+	}
+
 	// 确保 Xray 已安装
 	if err := ensureXrayInstalled(); err != nil {
 		return fmt.Errorf("Xray 未安装: %v", err)
@@ -1183,25 +1288,57 @@ func startXray() error {
 
 	xrayProcess = cmd.Process
 	xrayRunning = true
+	appendXrayEvent("INFO", "process-start", fmt.Sprintf("Xray 已启动 (pid=%d)", cmd.Process.Pid))
 
 	go func() {
-		cmd.Wait()
+		err := cmd.Wait()
+		xrayMu.Lock()
 		xrayRunning = false
 		xrayProcess = nil
+		xrayMu.Unlock()
+		if err != nil {
+			appendXrayEvent("ERROR", "process-exit", "Xray 进程退出: "+err.Error())
+		} else {
+			appendXrayEvent("WARN", "process-exit", "Xray 进程已退出")
+		}
 	}()
 
 	return nil
 }
 
 func stopXray() error {
+	xrayMu.Lock()
+	defer xrayMu.Unlock()
 	if xrayProcess != nil {
 		if err := xrayProcess.Kill(); err != nil {
 			return err
 		}
+		appendXrayEvent("WARN", "process-kill", fmt.Sprintf("Xray 进程已停止 (pid=%d)", xrayProcess.Pid))
 		xrayProcess = nil
 	}
 	xrayRunning = false
 	return nil
+}
+
+func startXrayWatchdog() {
+	appendXrayEvent("INFO", "watchdog", "Xray 守护已启动：异常退出将自动拉起")
+	ticker := time.NewTicker(8 * time.Second)
+	go func() {
+		for range ticker.C {
+			if !xrayDesiredRunning {
+				continue
+			}
+			if isXrayProcessAlive() {
+				continue
+			}
+			appendXrayEvent("WARN", "watchdog", "检测到 Xray 未运行，尝试自动重启")
+			if err := startXray(); err != nil {
+				appendXrayEvent("ERROR", "watchdog", "自动重启失败: "+err.Error())
+			} else {
+				appendXrayEvent("INFO", "watchdog", "自动重启成功")
+			}
+		}
+	}()
 }
 
 func generateXrayConfig() error {
