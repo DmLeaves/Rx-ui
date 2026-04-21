@@ -185,9 +185,8 @@ func syncTrafficToDatabase() error {
 		if hasPrevUp || hasPrevDown {
 			if deltaUp > 0 || deltaDown > 0 {
 				db.Model(&model.Inbound{}).Where("tag = ?", s.Tag).Updates(map[string]interface{}{
-					"up":       gorm.Expr("up + ?", deltaUp),
-					"down":     gorm.Expr("down + ?", deltaDown),
-					"all_time": gorm.Expr("COALESCE(all_time, 0) + ?", deltaUp+deltaDown),
+					"up":   gorm.Expr("up + ?", deltaUp),
+					"down": gorm.Expr("down + ?", deltaDown),
 				})
 			}
 		}

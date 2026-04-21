@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from 'uuid'
 
 const message = useMessage()
 const loading = ref(false)
+const submitting = ref(false)
 
 // 入站规则列表
 const inbounds = ref<Inbound[]>([])
@@ -171,7 +172,9 @@ function handleEdit(row: Client) {
 
 async function handleSubmit() {
   if (!selectedInboundId.value) return
+  if (submitting.value) return
 
+  submitting.value = true
   try {
     if (editingClient.value) {
       await inboundApi.updateClient(selectedInboundId.value, editingClient.value.id, clientForm.value)
@@ -184,6 +187,8 @@ async function handleSubmit() {
     fetchClients()
   } catch (error: any) {
     message.error(error.message || '操作失败')
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -319,8 +324,8 @@ onMounted(() => {
 
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showClientModal = false">取消</n-button>
-          <n-button type="primary" @click="handleSubmit">{{ editingClient ? '保存' : '添加' }}</n-button>
+          <n-button :disabled="submitting" @click="showClientModal = false">取消</n-button>
+          <n-button type="primary" :loading="submitting" :disabled="submitting" @click="handleSubmit">{{ editingClient ? '保存' : '添加' }}</n-button>
         </n-space>
       </template>
     </n-modal>

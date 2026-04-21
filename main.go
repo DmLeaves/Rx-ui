@@ -593,6 +593,47 @@ func triggerXrayReloadAsync(reason string) {
 	}()
 }
 
+func validateClientUnique(client *model.Client, excludeID int) error {
+	var inbound model.Inbound
+	if err := db.First(&inbound, client.InboundID).Error; err != nil {
+		return fmt.Errorf("入站规则不存在")
+	}
+
+	q := db.Model(&model.Client{}).Where("inbound_id = ?", client.InboundID)
+	if excludeID > 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+
+	switch inbound.Protocol {
+	case model.ProtocolVMess, model.ProtocolVLESS:
+		uuid := strings.TrimSpace(client.UUID)
+		if uuid == "" {
+			return fmt.Errorf("UUID 不能为空")
+		}
+		var count int64
+		if err := q.Where("uuid = ?", uuid).Count(&count).Error; err != nil {
+			return fmt.Errorf("校验失败: %v", err)
+		}
+		if count > 0 {
+			return fmt.Errorf("该 UUID 已存在于当前入站")
+		}
+	case model.ProtocolTrojan, model.ProtocolShadowsocks:
+		pwd := strings.TrimSpace(client.Password)
+		if pwd == "" {
+			return fmt.Errorf("密码不能为空")
+		}
+		var count int64
+		if err := q.Where("password = ?", pwd).Count(&count).Error; err != nil {
+			return fmt.Errorf("校验失败: %v", err)
+		}
+		if count > 0 {
+			return fmt.Errorf("该密码已存在于当前入站")
+		}
+	}
+
+	return nil
+}
+
 func handleCreateClient(c *gin.Context) {
 	var client model.Client
 	if err := c.ShouldBindJSON(&client); err != nil {
@@ -601,6 +642,10 @@ func handleCreateClient(c *gin.Context) {
 	}
 	if client.InboundID == 0 {
 		c.JSON(400, gin.H{"code": 1, "message": "inboundId 不能为空"})
+		return
+	}
+	if err := validateClientUnique(&client, 0); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
 	if err := db.Create(&client).Error; err != nil {
@@ -619,11 +664,17 @@ func handleUpdateClient(c *gin.Context) {
 		return
 	}
 	inboundID := client.InboundID
+	clientID := client.ID
 	if err := c.ShouldBindJSON(&client); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+	client.ID = clientID
 	client.InboundID = inboundID
+	if err := validateClientUnique(&client, clientID); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
 	if err := db.Save(&client).Error; err != nil {
 		c.JSON(500, gin.H{"code": 1, "message": "更新失败"})
 		return
@@ -636,7 +687,7 @@ func handleDeleteClient(c *gin.Context) {
 	id := c.Param("id")
 	var client model.Client
 	if err := db.First(&client, id).Error; err != nil {
-		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		c.JSON(200, gin.H{"code": 0, "message": "客户端不存在，视为已删除"})
 		return
 	}
 	if err := db.Delete(&model.Client{}, id).Error; err != nil {
