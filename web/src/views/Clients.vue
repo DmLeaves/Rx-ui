@@ -120,8 +120,7 @@ async function fetchInbounds() {
   }
 }
 
-async function fetchClients(showErrorOrEvent: boolean | Event = true) {
-  const showError = typeof showErrorOrEvent === 'boolean' ? showErrorOrEvent : true
+async function fetchClients() {
   if (!selectedInboundId.value) {
     clients.value = []
     return
@@ -131,9 +130,7 @@ async function fetchClients(showErrorOrEvent: boolean | Event = true) {
     const res = await inboundApi.listClients(selectedInboundId.value)
     clients.value = res.data.data || []
   } catch (error: any) {
-    if (showError) {
-      message.error(error.message || '获取客户端列表失败')
-    }
+    message.error(error.message || '获取客户端列表失败')
   } finally {
     loading.value = false
   }
@@ -184,8 +181,7 @@ async function handleSubmit() {
       message.success('添加成功')
     }
     showClientModal.value = false
-    // 后端会异步重载 Xray，列表刷新偶发短暂失败不应误报为操作失败
-    await fetchClients(false)
+    fetchClients()
   } catch (error: any) {
     message.error(error.message || '操作失败')
   }
@@ -196,7 +192,7 @@ async function handleDelete(clientId: number) {
   try {
     await inboundApi.deleteClient(selectedInboundId.value, clientId)
     message.success('删除成功')
-    await fetchClients(false)
+    fetchClients()
   } catch (error: any) {
     message.error(error.message || '删除失败')
   }
