@@ -571,11 +571,26 @@ func syncInboundClientsToSettings(inboundID int) error {
 	}
 
 	if xrayRunning {
-		_ = stopXray()
-		time.Sleep(300 * time.Millisecond)
-		_ = startXray()
+		triggerXrayReloadAsync(fmt.Sprintf("clients-updated inbound=%d", inboundID))
 	}
 	return nil
+}
+
+// triggerXrayReloadAsync 异步重载 Xray，避免前端请求因同步重启超时报错
+func triggerXrayReloadAsync(reason string) {
+	go func() {
+		appendXrayEvent("INFO", "reload-async", "收到异步重载请求: "+reason)
+		if err := stopXray(); err != nil {
+			appendXrayEvent("ERROR", "reload-async", "停止 Xray 失败: "+err.Error())
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		if err := startXray(); err != nil {
+			appendXrayEvent("ERROR", "reload-async", "启动 Xray 失败: "+err.Error())
+			return
+		}
+		appendXrayEvent("INFO", "reload-async", "Xray 异步重载完成: "+reason)
+	}()
 }
 
 func handleCreateClient(c *gin.Context) {
