@@ -49,7 +49,19 @@ var (
 		Resp gin.H
 	}{}
 	requestWindow int64 = 600
+
+	// 保护控制客户端列表的读-改-写，避免并发生成/注册时的丢失更新
+	controlClientsMu sync.Mutex
 )
+
+// mutateControlClients 原子地读-改-写控制客户端列表
+func mutateControlClients(fn func(map[string]controlClient)) {
+	controlClientsMu.Lock()
+	defer controlClientsMu.Unlock()
+	m := parseControlClients()
+	fn(m)
+	saveControlClients(m)
+}
 
 func parseControlClients() map[string]controlClient {
 	res := map[string]controlClient{}
@@ -147,7 +159,10 @@ func handleControlGenerateClient(c *gin.Context) {
 		c.JSON(500, gin.H{"code": 1, "message": "生成密钥失败: " + err.Error()})
 		return
 	}
-	clientID := fmt.Sprintf("ai-%d", time.Now().Unix())
+	// clientID 必须唯一：秒级时间戳会在同一秒内撞车导致覆盖，加随机后缀
+	sfx := make([]byte, 4)
+	_, _ = rand.Read(sfx)
+	clientID := fmt.Sprintf("ai-%d-%s", time.Now().Unix(), hex.EncodeToString(sfx))
 	cc := controlClient{
 		ClientID:  clientID,
 		PublicKey: base64.StdEncoding.EncodeToString(pub),
@@ -157,9 +172,7 @@ func handleControlGenerateClient(c *gin.Context) {
 	if cc.Remark == "" {
 		cc.Remark = "generated"
 	}
-	m := parseControlClients()
-	m[clientID] = cc
-	saveControlClients(m)
+	mutateControlClients(func(m map[string]controlClient) { m[clientID] = cc })
 
 	// 构建完整 URL（协议 + 主机 + 端口 + 路径）
 	host := c.Request.Host
@@ -252,12 +265,10 @@ func handleControlUpsertClient(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 1, "message": "publicKey 无效: " + err.Error()})
 		return
 	}
-	m := parseControlClients()
 	if !req.Enabled {
 		req.Enabled = true
 	}
-	m[req.ClientID] = req
-	saveControlClients(m)
+	mutateControlClients(func(m map[string]controlClient) { m[req.ClientID] = req })
 	c.JSON(200, gin.H{"code": 0, "message": "保存成功", "data": req})
 }
 
@@ -267,9 +278,7 @@ func handleControlDeleteClient(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 1, "message": "clientId 不能为空"})
 		return
 	}
-	m := parseControlClients()
-	delete(m, id)
-	saveControlClients(m)
+	mutateControlClients(func(m map[string]controlClient) { delete(m, id) })
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
 }
 

@@ -1411,7 +1411,15 @@ func getXrayBinPath() string {
 }
 
 func handleGetSettings(c *gin.Context) {
-	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": settings})
+	// 不向前端返回敏感项：authSecret(可伪造登录令牌) / controlClients(AI 客户端公钥库)
+	safe := make(map[string]string, len(settings))
+	for k, v := range settings {
+		if k == "authSecret" || k == "controlClients" {
+			continue
+		}
+		safe[k] = v
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": safe})
 }
 
 func handleUpdateSettings(c *gin.Context) {
