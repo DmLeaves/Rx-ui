@@ -645,6 +645,7 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 		if err := db.Create(&inbound).Error; err != nil {
 			return errResp("CREATE_FAILED", err.Error())
 		}
+		_ = reconcileInboundClients(inbound.ID)
 		if err := applyInboundRuntimeChanges(); err != nil {
 			_ = db.Delete(&model.Inbound{}, inbound.ID).Error
 			return errResp("XRAY_APPLY_FAILED", err.Error())
@@ -669,6 +670,7 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 		if err := db.Save(&inbound).Error; err != nil {
 			return errResp("UPDATE_FAILED", err.Error())
 		}
+		_ = reconcileInboundClients(inbound.ID)
 		if err := applyInboundRuntimeChanges(); err != nil {
 			_ = db.Save(&old).Error
 			return errResp("XRAY_APPLY_FAILED", err.Error())

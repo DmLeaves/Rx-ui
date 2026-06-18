@@ -432,6 +432,7 @@ func handleCreateInbound(c *gin.Context) {
 		c.JSON(500, gin.H{"code": 1, "message": "创建失败: " + err.Error()})
 		return
 	}
+	_ = reconcileInboundClients(inbound.ID) // 内联 clients 迁移进表并以表为准重建
 	if err := applyInboundRuntimeChanges(); err != nil {
 		_ = db.Delete(&model.Inbound{}, inbound.ID).Error
 		c.JSON(500, gin.H{"code": 1, "message": "入站已回滚，Xray 应用失败: " + err.Error()})
@@ -462,6 +463,7 @@ func handleUpdateInbound(c *gin.Context) {
 		c.JSON(500, gin.H{"code": 1, "message": "更新失败: " + err.Error()})
 		return
 	}
+	_ = reconcileInboundClients(inbound.ID) // 不让入站表单的 clients 覆盖客户端页加的人
 	if err := applyInboundRuntimeChanges(); err != nil {
 		_ = db.Save(&oldInbound).Error
 		c.JSON(500, gin.H{"code": 1, "message": "更新已回滚，Xray 应用失败: " + err.Error()})
@@ -525,7 +527,7 @@ func handleGetClients(c *gin.Context) {
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": clients})
 }
 
-func syncInboundClientsToSettings(inboundID int) error {
+func rebuildInboundClientSettings(inboundID int) error {
 	var inbound model.Inbound
 	if err := db.First(&inbound, inboundID).Error; err != nil {
 		return err
@@ -584,14 +586,75 @@ func syncInboundClientsToSettings(inboundID int) error {
 
 	b, _ := json.Marshal(settings)
 	inbound.Settings = string(b)
-	if err := db.Save(&inbound).Error; err != nil {
+	return db.Save(&inbound).Error
+}
+
+// syncInboundClientsToSettings 从 clients 表重建入站客户端设置，并在运行时异步重载 Xray。
+func syncInboundClientsToSettings(inboundID int) error {
+	if err := rebuildInboundClientSettings(inboundID); err != nil {
 		return err
 	}
-
 	if xrayRunning {
 		triggerXrayReloadAsync(fmt.Sprintf("clients-updated inbound=%d", inboundID))
 	}
 	return nil
+}
+
+// migrateSettingsClientsToTable 将「仅存在于入站 settings、而 clients 表中没有」的客户端迁移进表。
+// 这样「入站页保存」提交的内联 clients 不会覆盖掉「客户端页」加的人——clients 表为唯一来源。
+func migrateSettingsClientsToTable(inboundID int) error {
+	var inbound model.Inbound
+	if err := db.First(&inbound, inboundID).Error; err != nil {
+		return err
+	}
+	var settings map[string]interface{}
+	if strings.TrimSpace(inbound.Settings) != "" {
+		_ = json.Unmarshal([]byte(inbound.Settings), &settings)
+	}
+	arr, _ := settings["clients"].([]interface{})
+	for _, it := range arr {
+		m, ok := it.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		uuid := strings.TrimSpace(strFromAny(m["id"]))
+		pwd := strings.TrimSpace(strFromAny(m["password"]))
+		flow := strFromAny(m["flow"])
+		q := db.Model(&model.Client{}).Where("inbound_id = ?", inboundID)
+		switch inbound.Protocol {
+		case model.ProtocolVMess, model.ProtocolVLESS:
+			if uuid == "" {
+				continue
+			}
+			q = q.Where("uuid = ?", uuid)
+		case model.ProtocolTrojan:
+			if pwd == "" {
+				continue
+			}
+			q = q.Where("password = ?", pwd)
+		default:
+			continue // shadowsocks 等用单密码，由 rebuild 单独处理，无需迁移
+		}
+		var count int64
+		if err := q.Count(&count).Error; err != nil || count > 0 {
+			continue
+		}
+		remark := strings.TrimSpace(strFromAny(m["email"]))
+		if remark == "" {
+			remark = "migrated"
+		}
+		_ = db.Create(&model.Client{InboundID: inboundID, UUID: uuid, Password: pwd, Flow: flow, Enable: true, Remark: remark}).Error
+	}
+	return nil
+}
+
+// reconcileInboundClients 先迁移 settings 内联客户端进表，再用表重建 settings.clients。
+// 不触发重载（由调用方的 applyInboundRuntimeChanges 统一应用）。
+func reconcileInboundClients(inboundID int) error {
+	if err := migrateSettingsClientsToTable(inboundID); err != nil {
+		return err
+	}
+	return rebuildInboundClientSettings(inboundID)
 }
 
 // triggerXrayReloadAsync 异步重载 Xray，避免前端请求因同步重启超时报错
