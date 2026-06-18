@@ -130,6 +130,7 @@ func initDatabase() {
 	}
 
 	loadSettingsFromDB()
+	ensureAuthSecret() // 确保会话令牌签名密钥存在
 }
 
 func handleSettingCLI(args []string) {
@@ -210,6 +211,7 @@ func main() {
 
 	// 设置 API 路由
 	api := r.Group("/api/v1")
+	api.Use(authMiddleware()) // 统一鉴权：白名单(登录/健康/订阅/AI发现与签名接口)外均需有效登录令牌
 	{
 		// 健康检查
 		api.GET("/health", handleHealth)
@@ -387,7 +389,7 @@ func handleLogin(c *gin.Context) {
 		return
 	}
 
-	token := "rx-ui-token-" + user.Username
+	token := makeAuthToken(user.Username)
 
 	c.JSON(200, gin.H{
 		"code":    0,
@@ -400,7 +402,13 @@ func handleLogin(c *gin.Context) {
 }
 
 func handleMe(c *gin.Context) {
-	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"id": 1, "username": "admin"}})
+	username, _ := c.Get("username")
+	name, _ := username.(string)
+	var user model.User
+	if name != "" {
+		_ = db.Where("username = ?", name).First(&user).Error
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{"id": user.ID, "username": name}})
 }
 
 // ===== 入站规则 API =====
