@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & release (${{ matrix.goarch }})
+    name: Build (${{ matrix.goarch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,10 +26,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Resolve version
-        id: ver
         run: |
           REF="${{ github.event.inputs.tag || github.ref_name }}"
-          echo "tag=${REF}" >> "$GITHUB_OUTPUT"
           echo "${REF#v}" > config/version
           echo "构建版本: ${REF} (config/version=$(cat config/version))"
 
@@ -68,12 +66,29 @@ jobs:
           tar -czf rx-ui-linux-${{ matrix.goarch }}.tar.gz rx-ui
           ls -la rx-ui-linux-${{ matrix.goarch }}.tar.gz
 
-      - name: Publish release asset
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rx-ui-linux-${{ matrix.goarch }}
+          path: rx-ui-linux-${{ matrix.goarch }}.tar.gz
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish release (single job, avoids concurrent-create race)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: ${{ steps.ver.outputs.tag }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
-          files: rx-ui-linux-${{ matrix.goarch }}.tar.gz
+          files: dist/**/*.tar.gz
