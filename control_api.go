@@ -699,6 +699,9 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 		if err := json.Unmarshal(b, &client); err != nil || client.InboundID == 0 {
 			return errResp("INVALID_PARAMS", "inboundId is required")
 		}
+		if strings.TrimSpace(client.SubToken) == "" {
+			client.SubToken = randHexToken()
+		}
 		if err := db.Create(&client).Error; err != nil {
 			return errResp("CREATE_FAILED", err.Error())
 		}

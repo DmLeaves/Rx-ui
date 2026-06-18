@@ -92,6 +92,9 @@ type Client struct {
 	// nil = 不走代理（默认直连）；非 nil = 该客户端流量经对应上游代理转发。
 	ProxyID *int `json:"proxyId" gorm:"index"`
 
+	// 订阅令牌：不可猜的随机串，凭此通过 /api/v1/sub/<subToken> 获取本客户端的订阅链接。
+	SubToken string `json:"subToken" gorm:"index;size:64"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

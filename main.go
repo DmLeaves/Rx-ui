@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -131,6 +132,13 @@ func initDatabase() {
 
 	loadSettingsFromDB()
 	ensureAuthSecret() // 确保会话令牌签名密钥存在
+
+	// 为缺少订阅令牌的历史客户端回填
+	var noTokenClients []model.Client
+	db.Where("sub_token = '' OR sub_token IS NULL").Find(&noTokenClients)
+	for _, cl := range noTokenClients {
+		db.Model(&model.Client{}).Where("id = ?", cl.ID).Update("sub_token", randHexToken())
+	}
 }
 
 func handleSettingCLI(args []string) {
@@ -319,7 +327,8 @@ func main() {
 		api.GET("/system/status", handleSystemStatus)
 
 		// 订阅 API
-		api.GET("/sub", handleSubscription)
+		api.GET("/sub", handleSubscription)             // 全量(管理员，需登录)
+		api.GET("/sub/:token", handleClientSubscription) // 每客户端(公开，凭订阅 token)
 	}
 
 	// 设置静态文件服务
@@ -643,7 +652,7 @@ func migrateSettingsClientsToTable(inboundID int) error {
 		if remark == "" {
 			remark = "migrated"
 		}
-		_ = db.Create(&model.Client{InboundID: inboundID, UUID: uuid, Password: pwd, Flow: flow, Enable: true, Remark: remark}).Error
+		_ = db.Create(&model.Client{InboundID: inboundID, UUID: uuid, Password: pwd, Flow: flow, Enable: true, Remark: remark, SubToken: randHexToken()}).Error
 	}
 	return nil
 }
@@ -728,6 +737,9 @@ func handleCreateClient(c *gin.Context) {
 	if err := validateClientUnique(&client, 0); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": err.Error()})
 		return
+	}
+	if strings.TrimSpace(client.SubToken) == "" {
+		client.SubToken = randHexToken()
 	}
 	if err := db.Create(&client).Error; err != nil {
 		c.JSON(500, gin.H{"code": 1, "message": "创建失败"})
@@ -1959,6 +1971,150 @@ func handleSubscription(c *gin.Context) {
 	subContent := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
 	c.Header("Content-Type", "text/plain")
 	c.String(200, subContent)
+}
+
+// handleClientSubscription 凭客户端订阅 token 返回「仅该客户端」的订阅链接（base64）。
+// 公开访问但需正确 token；token 不存在返回 404，不泄露任何信息。
+func handleClientSubscription(c *gin.Context) {
+	token := strings.TrimSpace(c.Param("token"))
+	if token == "" {
+		c.String(404, "")
+		return
+	}
+	var client model.Client
+	if err := db.Where("sub_token = ?", token).First(&client).Error; err != nil {
+		c.String(404, "")
+		return
+	}
+	var inbound model.Inbound
+	if err := db.First(&inbound, client.InboundID).Error; err != nil || !inbound.Enable || !client.Enable {
+		c.String(404, "")
+		return
+	}
+	link := buildClientLink(&inbound, &client, c.Query("host"))
+	c.Header("Content-Type", "text/plain")
+	c.String(200, base64.StdEncoding.EncodeToString([]byte(link)))
+}
+
+// buildClientLink 为「指定客户端」生成分享链接。连接地址优先取 TLS serverName / ws Host
+// （CDN/域名前置场景的真实节点域名），否则回退到传入 host。
+func buildClientLink(inbound *model.Inbound, client *model.Client, fallbackHost string) string {
+	var streamSettings map[string]interface{}
+	if inbound.StreamSettings != "" {
+		json.Unmarshal([]byte(inbound.StreamSettings), &streamSettings)
+	}
+	network, security, wsPath, wsHost, grpcServiceName, sni := "tcp", "none", "", "", "", ""
+	if streamSettings != nil {
+		if n, ok := streamSettings["network"].(string); ok {
+			network = n
+		}
+		if s, ok := streamSettings["security"].(string); ok {
+			security = s
+		}
+		if ws, ok := streamSettings["wsSettings"].(map[string]interface{}); ok {
+			if p, ok := ws["path"].(string); ok {
+				wsPath = p
+			}
+			if h, ok := ws["headers"].(map[string]interface{}); ok {
+				if hh, ok := h["Host"].(string); ok {
+					wsHost = hh
+				}
+			}
+		}
+		if g, ok := streamSettings["grpcSettings"].(map[string]interface{}); ok {
+			if sn, ok := g["serviceName"].(string); ok {
+				grpcServiceName = sn
+			}
+		}
+		if tls, ok := streamSettings["tlsSettings"].(map[string]interface{}); ok {
+			if s, ok := tls["serverName"].(string); ok {
+				sni = s
+			}
+		}
+	}
+
+	host := strings.TrimSpace(fallbackHost)
+	if sni != "" {
+		host = sni
+	} else if wsHost != "" {
+		host = wsHost
+	}
+	if strings.Contains(host, ":") {
+		host = strings.Split(host, ":")[0]
+	}
+
+	remark := client.Remark
+	if remark == "" {
+		remark = fmt.Sprintf("%s-%d", inbound.Remark, client.ID)
+	}
+
+	switch inbound.Protocol {
+	case model.ProtocolVMess:
+		if strings.TrimSpace(client.UUID) == "" {
+			return ""
+		}
+		obj := map[string]interface{}{
+			"v": "2", "ps": remark, "add": host, "port": inbound.Port, "id": client.UUID,
+			"aid": 0, "net": network, "type": "none", "host": wsHost, "path": wsPath, "tls": security,
+		}
+		if network == "grpc" {
+			obj["path"] = grpcServiceName
+		}
+		data, _ := json.Marshal(obj)
+		return "vmess://" + base64.StdEncoding.EncodeToString(data)
+	case model.ProtocolVLESS:
+		if strings.TrimSpace(client.UUID) == "" {
+			return ""
+		}
+		p := url.Values{}
+		p.Set("type", network)
+		p.Set("security", security)
+		if network == "ws" {
+			if wsPath != "" {
+				p.Set("path", wsPath)
+			}
+			if wsHost != "" {
+				p.Set("host", wsHost)
+			}
+		}
+		if network == "grpc" && grpcServiceName != "" {
+			p.Set("serviceName", grpcServiceName)
+		}
+		if (security == "tls" || security == "xtls") && sni != "" {
+			p.Set("sni", sni)
+		}
+		if client.Flow != "" {
+			p.Set("flow", client.Flow)
+		}
+		return fmt.Sprintf("vless://%s@%s:%d?%s#%s", client.UUID, host, inbound.Port, p.Encode(), url.QueryEscape(remark))
+	case model.ProtocolTrojan:
+		if strings.TrimSpace(client.Password) == "" {
+			return ""
+		}
+		p := url.Values{}
+		if network != "tcp" {
+			p.Set("type", network)
+		}
+		if network == "ws" {
+			if wsPath != "" {
+				p.Set("path", wsPath)
+			}
+			if wsHost != "" {
+				p.Set("host", wsHost)
+			}
+		}
+		if sni != "" {
+			p.Set("sni", sni)
+		}
+		q := p.Encode()
+		if q != "" {
+			q = "?" + q
+		}
+		return fmt.Sprintf("trojan://%s@%s:%d%s#%s", url.QueryEscape(client.Password), host, inbound.Port, q, url.QueryEscape(remark))
+	case model.ProtocolShadowsocks:
+		return generateInboundLink(inbound, host)
+	}
+	return ""
 }
 
 func generateInboundLink(inbound *model.Inbound, host string) string {

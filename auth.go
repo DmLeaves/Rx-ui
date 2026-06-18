@@ -29,6 +29,13 @@ func ensureAuthSecret() string {
 	return s
 }
 
+// randHexToken 生成一个随机的十六进制令牌（用于订阅 token 等）
+func randHexToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func signAuthMsg(msg string) string {
 	mac := hmac.New(sha256.New, []byte(ensureAuthSecret()))
 	mac.Write([]byte(msg))
@@ -66,7 +73,7 @@ func validateAuthToken(token string) (string, bool) {
 var authPublicPaths = map[string]bool{
 	"/api/v1/health":            true,
 	"/api/v1/auth/login":        true,
-	"/api/v1/sub":               true,
+	"/api/v1/sub/:token":        true, // 每客户端订阅：公开但凭不可猜 token 校验
 	"/api/v1/control/bootstrap": true,
 	"/api/v1/control/discovery": true,
 	"/api/v1/control/manifest":  true,
