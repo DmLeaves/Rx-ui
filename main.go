@@ -152,16 +152,14 @@ func handleSettingCLI(args []string) {
 
 	if *reset {
 		for k, v := range defaultSettings {
-			settings[k] = v
-			upsertSetting(k, v)
+			setSetting(k, v)
 		}
 		fmt.Println("面板设置已重置为默认值")
 	}
 
 	if strings.TrimSpace(*port) != "" {
-		settings["webPort"] = strings.TrimSpace(*port)
-		upsertSetting("webPort", settings["webPort"])
-		fmt.Printf("面板端口已设置为: %s\n", settings["webPort"])
+		setSetting("webPort", strings.TrimSpace(*port))
+		fmt.Printf("面板端口已设置为: %s\n", getSetting("webPort"))
 	}
 
 	if strings.TrimSpace(*username) != "" || strings.TrimSpace(*password) != "" {
@@ -181,9 +179,9 @@ func handleSettingCLI(args []string) {
 	}
 
 	if *show || (*port == "" && *username == "" && *password == "" && !*reset) {
-		fmt.Printf("webPort: %s\n", settings["webPort"])
-		fmt.Printf("webBasePath: %s\n", settings["webBasePath"])
-		fmt.Printf("timeZone: %s\n", settings["timeZone"])
+		fmt.Printf("webPort: %s\n", getSetting("webPort"))
+		fmt.Printf("webBasePath: %s\n", getSetting("webBasePath"))
+		fmt.Printf("timeZone: %s\n", getSetting("timeZone"))
 		var user model.User
 		if err := db.Order("id asc").First(&user).Error; err == nil {
 			fmt.Printf("username: %s\n", user.Username)
@@ -343,7 +341,7 @@ func main() {
 	go reconcileFirewall()
 
 	// 启动服务器（优先级：PORT 环境变量 > settings.webPort > 默认 54321）
-	port := strings.TrimSpace(settings["webPort"])
+	port := strings.TrimSpace(getSetting("webPort"))
 	if port == "" {
 		port = "54321"
 	}
@@ -1183,17 +1181,17 @@ func handleDeleteCertificate(c *gin.Context) {
 
 func getAcmeStatus() (bool, []string) {
 	missing := make([]string, 0)
-	if strings.TrimSpace(settings["acmeEnabled"]) != "true" {
+	if strings.TrimSpace(getSetting("acmeEnabled")) != "true" {
 		missing = append(missing, "请先在系统设置启用 ACME")
 	}
-	if strings.TrimSpace(settings["acmeEmail"]) == "" {
+	if strings.TrimSpace(getSetting("acmeEmail")) == "" {
 		missing = append(missing, "acmeEmail")
 	}
-	provider := strings.TrimSpace(settings["acmeDnsProvider"])
+	provider := strings.TrimSpace(getSetting("acmeDnsProvider"))
 	if provider == "" {
 		missing = append(missing, "acmeDnsProvider")
 	} else if provider == "cloudflare" {
-		if strings.TrimSpace(settings["acmeDnsApiToken"]) == "" {
+		if strings.TrimSpace(getSetting("acmeDnsApiToken")) == "" {
 			missing = append(missing, "acmeDnsApiToken")
 		}
 	} else {
@@ -1206,8 +1204,8 @@ func handleGetAcmeStatus(c *gin.Context) {
 	ok, missing := getAcmeStatus()
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
 		"configured": ok,
-		"provider":   settings["acmeDnsProvider"],
-		"email":      settings["acmeEmail"],
+		"provider":   getSetting("acmeDnsProvider"),
+		"email":      getSetting("acmeEmail"),
 		"missing":    missing,
 	}})
 }
@@ -1217,9 +1215,9 @@ func runLegoRenew(domain string) error {
 	if !ok {
 		return fmt.Errorf("ACME 配置不完整: %s", strings.Join(missing, ", "))
 	}
-	email := strings.TrimSpace(settings["acmeEmail"])
-	dnsProvider := strings.TrimSpace(settings["acmeDnsProvider"])
-	dnsToken := strings.TrimSpace(settings["acmeDnsApiToken"])
+	email := strings.TrimSpace(getSetting("acmeEmail"))
+	dnsProvider := strings.TrimSpace(getSetting("acmeDnsProvider"))
+	dnsToken := strings.TrimSpace(getSetting("acmeDnsApiToken"))
 
 	basePath := "./data/lego"
 	_ = os.MkdirAll(basePath, 0o755)
@@ -1365,6 +1363,7 @@ func parseCert(pemText string) *x509.Certificate {
 var defaultSettings = map[string]string{
 	"webPort":         "54321",
 	"webBasePath":     "/",
+	"panelAddress":    "", // 面板对外地址(如 https://panel.example.com)，留空则按请求自动推断
 	"webCertFile":     "",
 	"webKeyFile":      "",
 	"xrayBinPath":     "", // 自动检测
@@ -1376,24 +1375,66 @@ var defaultSettings = map[string]string{
 	"controlClients":  "{}",
 }
 
-var settings = map[string]string{}
+var (
+	settingsMu sync.RWMutex
+	settings   = map[string]string{} // 全局配置：务必经下列访问器读写以保证并发安全
+)
+
+// getSetting 并发安全地读取一个配置项
+func getSetting(key string) string {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	return settings[key]
+}
+
+// setSettingMem 仅更新内存（不持久化）
+func setSettingMem(key, value string) {
+	settingsMu.Lock()
+	settings[key] = value
+	settingsMu.Unlock()
+}
+
+// setSetting 更新内存并持久化到 DB
+func setSetting(key, value string) {
+	setSettingMem(key, value)
+	upsertSetting(key, value)
+}
+
+// snapshotSettings 返回配置的并发安全拷贝
+func snapshotSettings() map[string]string {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	out := make(map[string]string, len(settings))
+	for k, v := range settings {
+		out[k] = v
+	}
+	return out
+}
 
 func loadSettingsFromDB() {
+	var rows []model.Setting
+	db.Find(&rows)
+
+	settingsMu.Lock()
 	for k, v := range defaultSettings {
 		settings[k] = v
 	}
-
-	var rows []model.Setting
-	db.Find(&rows)
 	for _, row := range rows {
 		settings[row.Key] = row.Value
 	}
-
 	for k, v := range defaultSettings {
-		if _, ok := settings[k]; !ok || settings[k] == "" {
+		if cur, ok := settings[k]; !ok || cur == "" {
 			settings[k] = v
 		}
-		upsertSetting(k, settings[k])
+	}
+	persist := make(map[string]string, len(defaultSettings))
+	for k := range defaultSettings {
+		persist[k] = settings[k]
+	}
+	settingsMu.Unlock()
+
+	for k, v := range persist {
+		upsertSetting(k, v)
 	}
 }
 
@@ -1404,21 +1445,17 @@ func upsertSetting(key, value string) {
 
 // getXrayBinPath 获取 Xray 二进制路径
 func getXrayBinPath() string {
-	if settings["xrayBinPath"] != "" {
-		return settings["xrayBinPath"]
+	if p := getSetting("xrayBinPath"); p != "" {
+		return p
 	}
 	return getXrayPath()
 }
 
 func handleGetSettings(c *gin.Context) {
 	// 不向前端返回敏感项：authSecret(可伪造登录令牌) / controlClients(AI 客户端公钥库)
-	safe := make(map[string]string, len(settings))
-	for k, v := range settings {
-		if k == "authSecret" || k == "controlClients" {
-			continue
-		}
-		safe[k] = v
-	}
+	safe := snapshotSettings()
+	delete(safe, "authSecret")
+	delete(safe, "controlClients")
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": safe})
 }
 
@@ -1429,8 +1466,7 @@ func handleUpdateSettings(c *gin.Context) {
 		return
 	}
 	for k, v := range newSettings {
-		settings[k] = v
-		upsertSetting(k, v)
+		setSetting(k, v)
 	}
 	go reconcileFirewall()
 	c.JSON(200, gin.H{"code": 0, "message": "设置已更新"})

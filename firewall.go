@@ -35,7 +35,7 @@ func detectFirewallProvider() string {
 func buildDesiredFirewallRules() []desiredRule {
 	rules := make([]desiredRule, 0)
 
-	panelPort, _ := strconv.Atoi(settings["webPort"])
+	panelPort, _ := strconv.Atoi(getSetting("webPort"))
 	if panelPort > 0 {
 		rules = append(rules, desiredRule{scope: model.FirewallScopePanel, port: panelPort, protocol: "tcp", source: "any", action: "allow"})
 	}

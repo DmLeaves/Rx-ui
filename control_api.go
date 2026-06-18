@@ -54,6 +54,32 @@ var (
 	controlClientsMu sync.Mutex
 )
 
+// controlBasePath 返回配置的面板 basePath（已去除末尾斜杠，可为空）
+func controlBasePath() string {
+	return strings.TrimRight(strings.TrimSpace(getSetting("webBasePath")), "/")
+}
+
+// panelBaseURL 返回面板对外基础地址 scheme://host[:port]。
+// 优先使用配置的 panelAddress（适配 IP/域名/CDN 多种访问方式），否则按请求信息推断。
+func panelBaseURL(c *gin.Context) string {
+	if pa := strings.TrimRight(strings.TrimSpace(getSetting("panelAddress")), "/"); pa != "" {
+		return pa
+	}
+	host := c.Request.Host
+	if host == "" {
+		port := strings.TrimSpace(getSetting("webPort"))
+		if port == "" {
+			port = "54321"
+		}
+		host = "127.0.0.1:" + port
+	}
+	scheme := "http"
+	if c.Request.TLS != nil || (getSetting("webCertFile") != "" && getSetting("webKeyFile") != "") {
+		scheme = "https"
+	}
+	return scheme + "://" + host
+}
+
 // mutateControlClients 原子地读-改-写控制客户端列表
 func mutateControlClients(fn func(map[string]controlClient)) {
 	controlClientsMu.Lock()
@@ -65,7 +91,7 @@ func mutateControlClients(fn func(map[string]controlClient)) {
 
 func parseControlClients() map[string]controlClient {
 	res := map[string]controlClient{}
-	raw := strings.TrimSpace(settings["controlClients"])
+	raw := strings.TrimSpace(getSetting("controlClients"))
 	if raw == "" {
 		return res
 	}
@@ -75,8 +101,7 @@ func parseControlClients() map[string]controlClient {
 
 func saveControlClients(m map[string]controlClient) {
 	b, _ := json.Marshal(m)
-	settings["controlClients"] = string(b)
-	upsertSetting("controlClients", settings["controlClients"])
+	setSetting("controlClients", string(b))
 }
 
 func handleControlBootstrap(c *gin.Context) {
@@ -110,7 +135,7 @@ func handleControlBootstrap(c *gin.Context) {
 }
 
 func handleControlDiscovery(c *gin.Context) {
-	port := strings.TrimSpace(settings["webPort"])
+	port := strings.TrimSpace(getSetting("webPort"))
 	if port == "" {
 		port = "54321"
 	}
@@ -174,31 +199,7 @@ func handleControlGenerateClient(c *gin.Context) {
 	}
 	mutateControlClients(func(m map[string]controlClient) { m[clientID] = cc })
 
-	// 构建完整 URL（协议 + 主机 + 端口 + 路径）
-	host := c.Request.Host
-	if host == "" {
-		// 回退到配置的端口
-		port := strings.TrimSpace(settings["webPort"])
-		if port == "" {
-			port = "54321"
-		}
-		host = "127.0.0.1:" + port
-	}
-	// 判断是否 HTTPS（如果请求是 HTTPS 或面板配置了证书）
-	scheme := "http"
-	if c.Request.TLS != nil || (settings["webCertFile"] != "" && settings["webKeyFile"] != "") {
-		scheme = "https"
-	}
-	
-	basePath := strings.TrimRight(strings.TrimSpace(settings["webBasePath"]), "/")
-	if basePath == "" {
-		basePath = ""
-	}
-	skillPath := basePath + "/api/v1/control/skill"
-	if !strings.HasPrefix(skillPath, "/") {
-		skillPath = "/" + skillPath
-	}
-	skillURL := fmt.Sprintf("%s://%s%s", scheme, host, skillPath)
+	skillURL := panelBaseURL(c) + controlBasePath() + "/api/v1/control/skill"
 
 	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": gin.H{
 		"clientId":   clientID,
@@ -295,23 +296,7 @@ func handleControlExportClient(c *gin.Context) {
 		return
 	}
 
-	host := c.Request.Host
-	if host == "" {
-		port := strings.TrimSpace(settings["webPort"])
-		if port == "" {
-			port = "54321"
-		}
-		host = "127.0.0.1:" + port
-	}
-	scheme := "http"
-	if c.Request.TLS != nil || (settings["webCertFile"] != "" && settings["webKeyFile"] != "") {
-		scheme = "https"
-	}
-	basePath := strings.TrimRight(strings.TrimSpace(settings["webBasePath"]), "/")
-	if basePath == "" {
-		basePath = ""
-	}
-	
+	prefix := panelBaseURL(c) + controlBasePath()
 	config := gin.H{
 		"clientId": cc.ClientID,
 		"publicKey": cc.PublicKey,
@@ -319,13 +304,13 @@ func handleControlExportClient(c *gin.Context) {
 		"enabled": cc.Enabled,
 		"remark": cc.Remark,
 		"endpoints": gin.H{
-			"bootstrap": fmt.Sprintf("%s://%s%s/api/v1/control/bootstrap", scheme, host, basePath),
-			"discovery": fmt.Sprintf("%s://%s%s/api/v1/control/discovery", scheme, host, basePath),
-			"manifest": fmt.Sprintf("%s://%s%s/api/v1/control/manifest", scheme, host, basePath),
-			"errors": fmt.Sprintf("%s://%s%s/api/v1/control/errors", scheme, host, basePath),
-			"query": fmt.Sprintf("%s://%s%s/api/v1/control/query", scheme, host, basePath),
-			"exec": fmt.Sprintf("%s://%s%s/api/v1/control/exec", scheme, host, basePath),
-			"audit": fmt.Sprintf("%s://%s%s/api/v1/control/audit", scheme, host, basePath),
+			"bootstrap": prefix + "/api/v1/control/bootstrap",
+			"discovery": prefix + "/api/v1/control/discovery",
+			"manifest":  prefix + "/api/v1/control/manifest",
+			"errors":    prefix + "/api/v1/control/errors",
+			"query":     prefix + "/api/v1/control/query",
+			"exec":      prefix + "/api/v1/control/exec",
+			"audit":     prefix + "/api/v1/control/audit",
 		},
 		"headers": gin.H{
 			"X-Rxui-Client": "{{clientId}}",
@@ -1064,7 +1049,7 @@ func handleControlGetClientLink(c *gin.Context) {
 	// 获取主机地址（优先使用 WS Host 或 SNI）
 	host := c.Request.Host
 	if host == "" {
-		port := strings.TrimSpace(settings["webPort"])
+		port := strings.TrimSpace(getSetting("webPort"))
 		if port == "" {
 			port = "54321"
 		}

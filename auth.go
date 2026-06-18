@@ -18,13 +18,12 @@ const authTokenTTL = 7 * 24 * time.Hour
 
 // ensureAuthSecret 确保存在用于签发会话令牌的服务端密钥（首次启动随机生成并持久化）
 func ensureAuthSecret() string {
-	s := strings.TrimSpace(settings["authSecret"])
+	s := strings.TrimSpace(getSetting("authSecret"))
 	if s == "" {
 		b := make([]byte, 32)
 		_, _ = rand.Read(b)
 		s = hex.EncodeToString(b)
-		settings["authSecret"] = s
-		upsertSetting("authSecret", s)
+		setSetting("authSecret", s)
 	}
 	return s
 }

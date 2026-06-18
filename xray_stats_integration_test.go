@@ -27,12 +27,12 @@ exit 1
 		t.Fatal(err)
 	}
 
-	oldPath := settings["xrayBinPath"]
+	oldPath := getSetting("xrayBinPath")
 	oldRun := xrayRunning
-	settings["xrayBinPath"] = mock
+	setSettingMem("xrayBinPath", mock)
 	xrayRunning = true
 	defer func() {
-		settings["xrayBinPath"] = oldPath
+		setSettingMem("xrayBinPath", oldPath)
 		xrayRunning = oldRun
 	}()
 
