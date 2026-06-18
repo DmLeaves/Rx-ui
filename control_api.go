@@ -456,8 +456,8 @@ func handleControlExec(c *gin.Context) {
 
 func controlCapabilities() gin.H {
 	return gin.H{
-		"query": []string{"xray.status", "sys.status", "inbound.list", "inbound.get", "client.list", "client.get", "cert.list", "cert.get", "logs.tail"},
-		"exec":  []string{"xray.start", "xray.stop", "xray.restart", "inbound.create", "inbound.update", "inbound.delete", "client.create", "client.update", "client.delete", "cert.create", "cert.update", "cert.delete", "cert.renew", "net.ping"},
+		"query": []string{"xray.status", "sys.status", "inbound.list", "inbound.get", "client.list", "client.get", "proxy.list", "proxy.get", "cert.list", "cert.get", "logs.tail"},
+		"exec":  []string{"xray.start", "xray.stop", "xray.restart", "inbound.create", "inbound.update", "inbound.delete", "client.create", "client.update", "client.delete", "client.setProxy", "proxy.create", "proxy.update", "proxy.delete", "cert.create", "cert.update", "cert.delete", "cert.renew", "net.ping"},
 	}
 }
 
@@ -467,14 +467,18 @@ func controlActionSpecs() []gin.H {
 		{"action": "sys.status", "mode": "query", "summary": "查询系统汇总状态", "params": gin.H{}},
 		{"action": "inbound.list", "mode": "query", "summary": "列出入站", "params": gin.H{}},
 		{"action": "inbound.get", "mode": "query", "summary": "获取单个入站", "params": gin.H{"id": "number(optional)", "tag": "string(optional)"}},
-		{"action": "client.list", "mode": "query", "summary": "列出客户端", "params": gin.H{"inboundId": "number(optional)"}},
-		{"action": "client.get", "mode": "query", "summary": "获取单个客户端", "params": gin.H{"id": "number(required)"}},
+		{"action": "client.list", "mode": "query", "summary": "列出客户端（含 proxyId 字段：null=直连）", "params": gin.H{"inboundId": "number(optional)"}},
+		{"action": "client.get", "mode": "query", "summary": "获取单个客户端（含 proxyId）", "params": gin.H{"id": "number(required)"}},
+		{"action": "proxy.list", "mode": "query", "summary": "列出连锁(上游)代理", "params": gin.H{}},
+		{"action": "proxy.get", "mode": "query", "summary": "获取单个连锁代理", "params": gin.H{"id": "number(required)"}},
 		{"action": "cert.list", "mode": "query", "summary": "列出证书", "params": gin.H{}},
 		{"action": "cert.get", "mode": "query", "summary": "获取单个证书", "params": gin.H{"id": "number(optional)", "domain": "string(optional)"}},
 		{"action": "logs.tail", "mode": "query", "summary": "读取面板日志", "params": gin.H{"lines": "number(optional,1-500)"}},
 		{"action": "xray.start|stop|restart", "mode": "exec", "summary": "控制 Xray 进程", "params": gin.H{}},
 		{"action": "inbound.create|update|delete", "mode": "exec", "summary": "入站增改删", "params": gin.H{"id": "number(update/delete required)"}},
 		{"action": "client.create|update|delete", "mode": "exec", "summary": "客户端增改删", "params": gin.H{"id": "number(update/delete required)", "inboundId": "number(create required)"}},
+		{"action": "client.setProxy", "mode": "exec", "summary": "设置/清除客户端的连锁代理（proxyId 省略或<=0 表示恢复直连）", "params": gin.H{"id": "number(required)", "proxyId": "number(optional, 0/null=直连)"}},
+		{"action": "proxy.create|update|delete", "mode": "exec", "summary": "连锁代理增改删；create/update 支持 raw='host:port:user:pass' 或 host/port/username/password 字段 + protocol(socks|http)", "params": gin.H{"id": "number(update/delete required)", "raw": "string(optional)", "host": "string", "port": "number", "username": "string(optional)", "password": "string(optional)", "protocol": "string(socks|http)"}},
 		{"action": "cert.create|update|delete|renew", "mode": "exec", "summary": "证书管理", "params": gin.H{"id": "number(update/delete/renew required)", "domain": "string(create required)"}},
 		{"action": "net.ping", "mode": "exec", "summary": "网络探测", "params": gin.H{"target": "string(required)"}},
 	}
@@ -793,6 +797,94 @@ func executeAction(req actionReq, queryOnly bool) gin.H {
 			return errResp("RENEW_FAILED", err.Error())
 		}
 		out["data"] = cert
+	case "proxy.list":
+		var proxies []model.ChainedProxy
+		db.Order("id asc").Find(&proxies)
+		out["data"] = proxies
+	case "proxy.get":
+		id := intFromAny(req.Params["id"])
+		var proxy model.ChainedProxy
+		if id <= 0 || db.First(&proxy, id).Error != nil {
+			return errResp("NOT_FOUND", "proxy not found")
+		}
+		out["data"] = proxy
+	case "proxy.create":
+		if queryOnly {
+			return errResp("EXEC_ONLY_ACTION", "proxy.create is exec-only")
+		}
+		var pr proxyUpsertRequest
+		b, _ := json.Marshal(req.Params)
+		_ = json.Unmarshal(b, &pr)
+		proxy := model.ChainedProxy{Enable: true}
+		if err := pr.applyTo(&proxy); err != nil {
+			return errResp("INVALID_PARAMS", err.Error())
+		}
+		if err := db.Create(&proxy).Error; err != nil {
+			return errResp("CREATE_FAILED", err.Error())
+		}
+		out["data"] = proxy
+	case "proxy.update":
+		if queryOnly {
+			return errResp("EXEC_ONLY_ACTION", "proxy.update is exec-only")
+		}
+		id := intFromAny(req.Params["id"])
+		var proxy model.ChainedProxy
+		if id <= 0 || db.First(&proxy, id).Error != nil {
+			return errResp("NOT_FOUND", "proxy not found")
+		}
+		var pr proxyUpsertRequest
+		b, _ := json.Marshal(req.Params)
+		_ = json.Unmarshal(b, &pr)
+		if err := pr.applyTo(&proxy); err != nil {
+			return errResp("INVALID_PARAMS", err.Error())
+		}
+		if err := db.Save(&proxy).Error; err != nil {
+			return errResp("UPDATE_FAILED", err.Error())
+		}
+		if xrayRunning {
+			triggerXrayReloadAsync(fmt.Sprintf("proxy-updated id=%d", proxy.ID))
+		}
+		out["data"] = proxy
+	case "proxy.delete":
+		if queryOnly {
+			return errResp("EXEC_ONLY_ACTION", "proxy.delete is exec-only")
+		}
+		id := intFromAny(req.Params["id"])
+		if id <= 0 {
+			return errResp("MISSING_ID", "id is required")
+		}
+		db.Model(&model.Client{}).Where("proxy_id = ?", id).Update("proxy_id", nil)
+		_ = db.Delete(&model.ChainedProxy{}, id).Error
+		if xrayRunning {
+			triggerXrayReloadAsync(fmt.Sprintf("proxy-deleted id=%d", id))
+		}
+		out["data"] = gin.H{"deleted": id}
+	case "client.setProxy":
+		if queryOnly {
+			return errResp("EXEC_ONLY_ACTION", "client.setProxy is exec-only")
+		}
+		id := intFromAny(req.Params["id"])
+		var client model.Client
+		if id <= 0 || db.First(&client, id).Error != nil {
+			return errResp("NOT_FOUND", "client not found")
+		}
+		var proxyID *int
+		if pv, ok := req.Params["proxyId"]; ok && pv != nil {
+			if n := intFromAny(pv); n > 0 {
+				var proxy model.ChainedProxy
+				if db.First(&proxy, n).Error != nil {
+					return errResp("NOT_FOUND", "proxy not found")
+				}
+				proxyID = &n
+			}
+		}
+		if err := db.Model(&client).Update("proxy_id", proxyID).Error; err != nil {
+			return errResp("UPDATE_FAILED", err.Error())
+		}
+		if xrayRunning {
+			triggerXrayReloadAsync(fmt.Sprintf("client-proxy-updated client=%d", id))
+		}
+		out["data"] = gin.H{"clientId": id, "proxyId": proxyID}
 	default:
 		return errResp("UNSUPPORTED_ACTION", action)
 	}
