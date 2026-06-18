@@ -6,6 +6,7 @@ import Layout from '@/views/Layout.vue'
 import Dashboard from '@/views/Dashboard.vue'
 import Inbounds from '@/views/Inbounds.vue'
 import Clients from '@/views/Clients.vue'
+import ChainedProxy from '@/views/ChainedProxy.vue'
 import Certificates from '@/views/Certificates.vue'
 import Settings from '@/views/Settings.vue'
 import Users from '@/views/Users.vue'
@@ -36,6 +37,11 @@ const routes: RouteRecordRaw[] = [
         path: 'clients',
         name: 'Clients',
         component: Clients
+      },
+      {
+        path: 'chained-proxy',
+        name: 'ChainedProxy',
+        component: ChainedProxy
       },
       {
         path: 'certificates',

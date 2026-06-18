@@ -88,6 +88,10 @@ type Client struct {
 	// 证书关联（方向2扩展：同端口不同凭证可用不同证书）
 	CertificateID *int `json:"certificateId" gorm:"index"`
 
+	// 连锁代理关联：指向 ChainedProxy.ID。
+	// nil = 不走代理（默认直连）；非 nil = 该客户端流量经对应上游代理转发。
+	ProxyID *int `json:"proxyId" gorm:"index"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

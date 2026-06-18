@@ -118,7 +118,7 @@ func initDatabase() {
 	}
 
 	// 自动迁移
-	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{}, &model.Setting{}, &model.ControlAuditLog{})
+	db.AutoMigrate(&model.User{}, &model.Inbound{}, &model.Client{}, &model.Certificate{}, &model.FirewallRule{}, &model.Setting{}, &model.ControlAuditLog{}, &model.ChainedProxy{})
 
 	// 创建默认用户（如果不存在）
 	var count int64
@@ -233,6 +233,16 @@ func main() {
 		api.POST("/clients", handleCreateClient) // body 包含 inboundId
 		api.PUT("/clients/:id", handleUpdateClient)
 		api.DELETE("/clients/:id", handleDeleteClient)
+		api.PUT("/clients/:id/proxy", handleSetClientProxy) // 设置/清除客户端的连锁代理
+
+		// 连锁代理（上游代理链）API
+		proxies := api.Group("/proxies")
+		{
+			proxies.GET("", handleGetProxies)
+			proxies.POST("", handleCreateProxy)
+			proxies.PUT("/:id", handleUpdateProxy)
+			proxies.DELETE("/:id", handleDeleteProxy)
+		}
 
 		// 用户管理 API
 		users := api.Group("/users")
@@ -696,6 +706,183 @@ func handleDeleteClient(c *gin.Context) {
 	}
 	_ = syncInboundClientsToSettings(client.InboundID)
 	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+// ===== 连锁代理（上游代理链）API =====
+
+type proxyUpsertRequest struct {
+	Remark   string `json:"remark"`
+	Protocol string `json:"protocol"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Enable   *bool  `json:"enable"`
+	// Raw 支持直接粘贴 "host:port:user:pass" 形式，后端解析后覆盖上面字段
+	Raw string `json:"raw"`
+}
+
+// parseProxyString 解析 "host:port" 或 "host:port:user:pass" 形式的代理串。
+// 密码中若含冒号，会被完整保留（最多切 4 段）。
+func parseProxyString(s string) (host string, port int, user, pass string, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", 0, "", "", fmt.Errorf("代理串为空")
+	}
+	parts := strings.SplitN(s, ":", 4)
+	if len(parts) < 2 {
+		return "", 0, "", "", fmt.Errorf("格式应为 host:port 或 host:port:user:pass")
+	}
+	host = strings.TrimSpace(parts[0])
+	port, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, "", "", fmt.Errorf("端口非法: %s", parts[1])
+	}
+	if len(parts) >= 3 {
+		user = parts[2]
+	}
+	if len(parts) >= 4 {
+		pass = parts[3]
+	}
+	return host, port, user, pass, nil
+}
+
+func normalizeProxyProtocol(p string) string {
+	p = strings.ToLower(strings.TrimSpace(p))
+	switch p {
+	case "http", "https":
+		return "http"
+	case "", "socks", "socks5":
+		return "socks"
+	default:
+		return "socks"
+	}
+}
+
+func (req *proxyUpsertRequest) applyTo(p *model.ChainedProxy) error {
+	if strings.TrimSpace(req.Raw) != "" {
+		host, port, user, pass, err := parseProxyString(req.Raw)
+		if err != nil {
+			return err
+		}
+		p.Host, p.Port, p.Username, p.Password = host, port, user, pass
+	} else {
+		if strings.TrimSpace(req.Host) == "" {
+			return fmt.Errorf("主机地址不能为空")
+		}
+		if req.Port <= 0 || req.Port > 65535 {
+			return fmt.Errorf("端口非法")
+		}
+		p.Host = strings.TrimSpace(req.Host)
+		p.Port = req.Port
+		p.Username = req.Username
+		p.Password = req.Password
+	}
+	p.Remark = strings.TrimSpace(req.Remark)
+	p.Protocol = normalizeProxyProtocol(req.Protocol)
+	if req.Enable != nil {
+		p.Enable = *req.Enable
+	}
+	return nil
+}
+
+func handleGetProxies(c *gin.Context) {
+	var proxies []model.ChainedProxy
+	db.Order("id asc").Find(&proxies)
+	c.JSON(200, gin.H{"code": 0, "message": "ok", "data": proxies})
+}
+
+func handleCreateProxy(c *gin.Context) {
+	var req proxyUpsertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	proxy := model.ChainedProxy{Enable: true}
+	if err := req.applyTo(&proxy); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
+	if err := db.Create(&proxy).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "创建失败: " + err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"code": 0, "message": "创建成功", "data": proxy})
+}
+
+func handleUpdateProxy(c *gin.Context) {
+	id := c.Param("id")
+	var proxy model.ChainedProxy
+	if err := db.First(&proxy, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "代理不存在"})
+		return
+	}
+	var req proxyUpsertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	if err := req.applyTo(&proxy); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
+	if err := db.Save(&proxy).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "更新失败: " + err.Error()})
+		return
+	}
+	// 该代理可能正被客户端使用，重载使配置生效
+	if xrayRunning {
+		triggerXrayReloadAsync(fmt.Sprintf("proxy-updated id=%d", proxy.ID))
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "更新成功", "data": proxy})
+}
+
+func handleDeleteProxy(c *gin.Context) {
+	id := c.Param("id")
+	pid, _ := strconv.Atoi(id)
+	// 解除所有引用该代理的客户端绑定，避免悬空路由
+	db.Model(&model.Client{}).Where("proxy_id = ?", pid).Update("proxy_id", nil)
+	if err := db.Delete(&model.ChainedProxy{}, pid).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "删除失败"})
+		return
+	}
+	if xrayRunning {
+		triggerXrayReloadAsync(fmt.Sprintf("proxy-deleted id=%d", pid))
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "删除成功"})
+}
+
+// handleSetClientProxy 设置或清除某客户端的连锁代理。
+// body: {"proxyId": <id> | null}，null 表示恢复直连（不走代理）。
+func handleSetClientProxy(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		ProxyID *int `json:"proxyId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	var client model.Client
+	if err := db.First(&client, id).Error; err != nil {
+		c.JSON(404, gin.H{"code": 1, "message": "客户端不存在"})
+		return
+	}
+	if req.ProxyID != nil {
+		var proxy model.ChainedProxy
+		if err := db.First(&proxy, *req.ProxyID).Error; err != nil {
+			c.JSON(400, gin.H{"code": 1, "message": "代理不存在"})
+			return
+		}
+	}
+	if err := db.Model(&client).Update("proxy_id", req.ProxyID).Error; err != nil {
+		c.JSON(500, gin.H{"code": 1, "message": "设置失败: " + err.Error()})
+		return
+	}
+	if xrayRunning {
+		triggerXrayReloadAsync(fmt.Sprintf("client-proxy-updated client=%d", client.ID))
+	}
+	c.JSON(200, gin.H{"code": 0, "message": "设置成功"})
 }
 
 // ===== 用户管理 API =====
@@ -1430,6 +1617,65 @@ func generateXrayConfig() error {
 	}
 	inboundConfigs = append(inboundConfigs, apiInbound)
 
+	// ===== 连锁代理：上游 outbound + 按客户端路由规则 =====
+	// 基础 outbound
+	outbounds := []map[string]interface{}{
+		{"protocol": "freedom", "tag": "direct"},
+		{"protocol": "blackhole", "tag": "blocked"},
+		{"protocol": "freedom", "tag": "api"},
+	}
+	// 基础路由规则
+	routingRules := []map[string]interface{}{
+		{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
+		{"type": "field", "outboundTag": "blocked", "ip": []string{"geoip:private"}},
+	}
+
+	// 找出所有「已启用且已绑定代理」的客户端
+	var proxiedClients []model.Client
+	db.Where("enable = ? AND proxy_id IS NOT NULL", true).Order("id asc").Find(&proxiedClients)
+	if len(proxiedClients) > 0 {
+		// 收集被引用的代理 ID
+		neededProxyIDs := make(map[int]bool)
+		for _, c := range proxiedClients {
+			if c.ProxyID != nil {
+				neededProxyIDs[*c.ProxyID] = true
+			}
+		}
+		// 为每个有效（存在且启用）的代理生成一个 outbound
+		validProxy := make(map[int]bool)
+		for pid := range neededProxyIDs {
+			var p model.ChainedProxy
+			if err := db.First(&p, pid).Error; err != nil || !p.Enable {
+				continue
+			}
+			server := map[string]interface{}{"address": p.Host, "port": p.Port}
+			if strings.TrimSpace(p.Username) != "" {
+				server["users"] = []map[string]interface{}{
+					{"user": p.Username, "pass": p.Password},
+				}
+			}
+			outbounds = append(outbounds, map[string]interface{}{
+				"tag":      fmt.Sprintf("proxy-%d", p.ID),
+				"protocol": p.Protocol, // socks | http
+				"settings": map[string]interface{}{
+					"servers": []map[string]interface{}{server},
+				},
+			})
+			validProxy[p.ID] = true
+		}
+		// 为每个绑定了有效代理的客户端生成一条路由规则（按 user email 匹配）
+		for _, c := range proxiedClients {
+			if c.ProxyID == nil || !validProxy[*c.ProxyID] {
+				continue
+			}
+			routingRules = append(routingRules, map[string]interface{}{
+				"type":        "field",
+				"user":        []string{fmt.Sprintf("clt-%d", c.ID)},
+				"outboundTag": fmt.Sprintf("proxy-%d", *c.ProxyID),
+			})
+		}
+	}
+
 	config := map[string]interface{}{
 		"log": map[string]interface{}{
 			"loglevel": "warning",
@@ -1451,17 +1697,10 @@ func generateXrayConfig() error {
 				"statsInboundDownlink": true,
 			},
 		},
-		"inbounds": inboundConfigs,
-		"outbounds": []map[string]interface{}{
-			{"protocol": "freedom", "tag": "direct"},
-			{"protocol": "blackhole", "tag": "blocked"},
-			{"protocol": "freedom", "tag": "api"},
-		},
+		"inbounds":  inboundConfigs,
+		"outbounds": outbounds,
 		"routing": map[string]interface{}{
-			"rules": []map[string]interface{}{
-				{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
-				{"type": "field", "outboundTag": "blocked", "ip": []string{"geoip:private"}},
-			},
+			"rules": routingRules,
 		},
 	}
 

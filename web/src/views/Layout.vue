@@ -3,7 +3,7 @@ import { h, computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NButton, NIcon, NSpace, NSwitch } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
-import { HomeOutline, ServerOutline, PeopleOutline, ShieldCheckmarkOutline, SettingsOutline, LogOutOutline, SunnyOutline, MoonOutline, PersonCircleOutline } from '@vicons/ionicons5'
+import { HomeOutline, ServerOutline, PeopleOutline, ShieldCheckmarkOutline, SettingsOutline, LogOutOutline, SunnyOutline, MoonOutline, PersonCircleOutline, GitNetworkOutline } from '@vicons/ionicons5'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -28,6 +28,11 @@ const menuOptions: MenuOption[] = [
     label: () => h(RouterLink, { to: '/clients' }, { default: () => '客户端' }),
     key: 'Clients',
     icon: () => h(NIcon, null, { default: () => h(PeopleOutline) })
+  },
+  {
+    label: () => h(RouterLink, { to: '/chained-proxy' }, { default: () => '链式代理' }),
+    key: 'ChainedProxy',
+    icon: () => h(NIcon, null, { default: () => h(GitNetworkOutline) })
   },
   {
     label: () => h(RouterLink, { to: '/certificates' }, { default: () => '证书管理' }),

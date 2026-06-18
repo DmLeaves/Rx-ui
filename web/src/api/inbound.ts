@@ -35,6 +35,7 @@ export interface Client {
   total: number
   expiryTime: number
   certificateId?: number
+  proxyId?: number | null
   createdAt: string
   updatedAt: string
 }
